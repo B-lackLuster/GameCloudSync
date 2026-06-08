@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller 打包产物
+build/
+dist/
+
+# 用户配置文件（含 WebDAV 密码等敏感信息）
+config.json
+
+# 系统运行时文件
+wakeup.tmp
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 备份文件
+*.bak*
+
+# 系统
+Thumbs.db
+Desktop.ini
