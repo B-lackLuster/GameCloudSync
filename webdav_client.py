@@ -23,7 +23,7 @@ except AttributeError:
 class WebDAVClient:
     """基于标准库的 WebDAV 客户端，支持 PROPFIND / MKCOL / PUT / GET / DELETE"""
 
-    def __init__(self, url, username, password, log_cb=None):
+    def __init__(self, url, username, password, log_cb=None, debug_cb=None):
         self.url = url.rstrip('/')
         self.username = username
         self.password = password
@@ -31,8 +31,14 @@ class WebDAVClient:
             f'{username}:{password}'.encode('utf-8')
         ).decode('ascii')
         self._log = log_cb
+        self._dbg = debug_cb
         # 提取 URL 路径前缀，用于匹配服务器返回的相对路径 href
         self._url_path = urllib.parse.urlparse(self.url).path.rstrip('/')
+
+    def _dlog(self, msg):
+        """调试日志：仅在传入 debug_cb 时输出，用于 suppress 细节日志"""
+        if self._dbg:
+            self._dbg(msg)
 
     def _request(self, method, path, data=None, extra_headers=None):
         """发送 HTTP 请求到 WebDAV 服务器"""
@@ -98,8 +104,7 @@ class WebDAVClient:
         except ET.ParseError as e:
             if self._log:
                 self._log(f"🌐 WebDAV PROPFIND {path}: XML 解析失败 ({e})")
-        if self._log:
-            self._log(f"🌐 WebDAV PROPFIND {path}: 获取到 {len(results)} 项")
+        self._dlog(f"🌐 WebDAV PROPFIND {path}: {len(results)} 项")
         return results
 
     def list_dir(self, path):
@@ -185,7 +190,10 @@ class WebDAVClient:
         all_files = []
         self._collect_files(remote_dir, local_dir, all_files)
         if not all_files:
+            self._log(f"🌐 WebDAV download_dir '{remote_dir}': 未收集到任何文件")
             return 0
+
+        self._dlog(f"🌐 WebDAV download_dir '{remote_dir}': 发现 {len(all_files)} 个文件，开始下载...")
 
         # Phase 2: 创建所有本地子目录
         dirs_created = set()
@@ -216,10 +224,13 @@ class WebDAVClient:
         items = self.propfind(remote_dir)
         server_path = f"{self._url_path}/{remote_dir.lstrip('/')}".rstrip('/')
 
+        self._dlog(f"🌐 _collect_files '{remote_dir}': {len(items)} 项")
+
         for href, name in items:
             decoded = urllib.request.unquote(href)
             href_path = urllib.parse.urlparse(decoded).path.rstrip('/')
             if href_path == server_path:
+                self._dlog(f"🌐 _collect_files: 跳过自身 {href_path}")
                 continue
             local_child = os.path.join(local_dir, name)
             if href.endswith('/'):
@@ -227,3 +238,4 @@ class WebDAVClient:
                 self._collect_files(sub_remote, local_child, result)
             else:
                 result.append((f"{remote_dir}/{name}", local_child))
+                self._dlog(f"🌐 _collect_files: 发现 {remote_dir}/{name}")

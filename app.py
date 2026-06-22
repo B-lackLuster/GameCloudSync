@@ -20,11 +20,21 @@ from watchdog.observers import Observer
 
 from constants import (
     CONFIG_FILE, COOLDOWN_SECONDS, DEFAULT_MAX_BACKUPS,
-    WAKEUP_FILE, WEBDAV_WORKERS
+    WAKEUP_FILE, WEBDAV_WORKERS, _APP_DIR,
+    CLOUD_CONFIG_BACKUP_DIR, MAX_CONFIG_BACKUPS,
+    SYNC_THRESHOLD_SECONDS, WEBDAV_CONFIG_LIST_LIMIT,
+    METHOD_ONEDRIVE, METHOD_WEBDAV, SOURCE_ASK,
+    COLOR_BG, COLOR_CARD, COLOR_PRIMARY, COLOR_SUCCESS, COLOR_SUCCESS_HOVER,
+    COLOR_DANGER, COLOR_DANGER_HOVER, COLOR_TEXT, COLOR_TEXT_SEC, COLOR_BORDER,
+    COLOR_BORDER_HOVER, COLOR_LOG_BG, COLOR_LOG_FG, COLOR_MUTED,
+    COLOR_CLOUD_NEW_BG, COLOR_LOCAL_NEW_BG, COLOR_PAUSED_BG,
+    COLOR_TRAY_ACTIVE, COLOR_TRAY_INACTIVE,
+    AUTOSTART_REG_PATH, AUTOSTART_REG_NAME,
 )
 from webdav_client import WebDAVClient
 from worker import BackgroundWorker, SaveHandler
 from ui_widgets import RoundedButton, create_button
+import secrets_store
 from utils import (
     center_window, detect_font, rmtree_safe, make_checkbox_images,
     fix_save_path, get_latest_mtime, get_folder_size, apply_backup_mtime,
@@ -48,15 +58,40 @@ class CloudBackupApp:
         self.autostart = config.get("autostart", False)
         self.webdav_url = config.get("webdav_url", "")
         self.webdav_username = config.get("webdav_username", "")
-        self.webdav_password = config.get("webdav_password", "")
+        # WebDAV 密码安全存储：优先用 DPAPI/加密文件，不再写入 config.json
+        # 1) 先尝试从加密存储读取
+        # 2) 若没有但 config.json 里有明文（老用户），一次性迁移到加密存储并清除明文
+        legacy_pw = config.get("webdav_password", "")
+        stored_pw = secrets_store.load_password(_APP_DIR)
+        if stored_pw is not None:
+            self.webdav_password = stored_pw
+        elif legacy_pw:
+            # 老用户迁移：把明文密码转存到加密存储，然后从 config.json 抹除
+            self.webdav_password = legacy_pw
+            if secrets_store.save_password(_APP_DIR, legacy_pw):
+                config.pop("webdav_password", None)
+                # 写回 config.json，仅做去密码化；保存完整配置在 __init__ 末尾的 save_config 之前完成
+                try:
+                    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                        json.dump(config, f, indent=4, ensure_ascii=False)
+                    # log_text 此时可能尚未创建，延后到 UI 就绪后输出
+                    self.root.after(1500, lambda: self.log(
+                        "🔒 已将 WebDAV 密码迁移到系统加密存储（不再以明文保存）。"))
+                except Exception as e:
+                    self.root.after(1500, lambda err=e: self.log(
+                        f"⚠ WebDAV 密码加密迁移失败，本次仍可用明文: {err}"))
+        else:
+            self.webdav_password = ""
         self.default_max_backups = config.get("default_max_backups", DEFAULT_MAX_BACKUPS)
-        self.default_download_source = config.get("default_download_source", "ask")
+        self.default_download_source = config.get("default_download_source", SOURCE_ASK)
         self.background_mode = config.get("background_mode", True)
         self.auto_sync_on_startup = config.get("auto_sync_on_startup", False)
         self.auto_backup_config_to_cloud = config.get("auto_backup_config_to_cloud", False)
+        self.default_config_source = config.get("default_config_source", SOURCE_ASK)
+        self.debug_webdav_log = config.get("debug_webdav_log", False)
         self.games_config = config.get("games", [])
 
-        # 向后兼容
+        # 向后兼容：极早期版本 config.json 直接是一个游戏列表
         if isinstance(config, list):
             self.cloud_root = ""
             self.autostart = False
@@ -64,16 +99,18 @@ class CloudBackupApp:
             self.webdav_username = ""
             self.webdav_password = ""
             self.default_max_backups = DEFAULT_MAX_BACKUPS
-            self.default_download_source = "ask"
+            self.default_download_source = SOURCE_ASK
             self.background_mode = True
             self.auto_sync_on_startup = False
             self.auto_backup_config_to_cloud = False
+            self.default_config_source = SOURCE_ASK
+            self.debug_webdav_log = False
             self.games_config = config
 
         # 确保每个游戏都有 backup_methods 和 max_backups 字段
         for g in self.games_config:
             if "backup_methods" not in g:
-                g["backup_methods"] = ["onedrive"]
+                g["backup_methods"] = [METHOD_ONEDRIVE]
             if "max_backups" not in g:
                 g["max_backups"] = self.default_max_backups
 
@@ -83,6 +120,9 @@ class CloudBackupApp:
         self._selected_game_name = None  # 右键点击时暂存
         self._btn_upload = None       # 在 setup_ui 中赋值
         self._btn_download = None
+        self._btn_update_config = None  # "更新配置"按钮，在 setup_ui 中赋值
+        self._pending_cloud_games = []  # 云端检测到的新游戏列表
+        self._pending_cloud_source = ""  # 云端来源标签
 
         # 后台工作线程，避免 I/O 阻塞 GUI
         self.worker = BackgroundWorker(root)
@@ -122,6 +162,24 @@ class CloudBackupApp:
         with self._config_lock:
             return list(self.games_config)
 
+    # ---- 待同步的云端新游戏（后台 _check_cloud_config 写、主线程 _apply_cloud_config_update 读） ----
+    def _set_pending_cloud(self, games, source_label):
+        """线程安全地设置待同步的云端新游戏列表与来源标签"""
+        with self._config_lock:
+            self._pending_cloud_games = list(games) if games else []
+            self._pending_cloud_source = source_label or ""
+
+    def _get_pending_cloud(self):
+        """线程安全地读取待同步的云端新游戏（返回快照副本，避免外部遍历时被并发改写）"""
+        with self._config_lock:
+            return list(self._pending_cloud_games), self._pending_cloud_source
+
+    def _clear_pending_cloud(self):
+        """线程安全地清空待同步状态"""
+        with self._config_lock:
+            self._pending_cloud_games = []
+            self._pending_cloud_source = ""
+
     # ================= 配置读写 =================
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -129,10 +187,11 @@ class CloudBackupApp:
                 data = json.load(f)
             if isinstance(data, list):
                 return {"cloud_root": "", "autostart": False,
-                        "webdav_url": "", "webdav_username": "", "webdav_password": "",
+                        "webdav_url": "", "webdav_username": "",
                         "games": data}
             # 向后兼容: 确保有 webdav 字段和新配置项
-            for key in ("webdav_url", "webdav_username", "webdav_password"):
+            # 注意：webdav_password 仅用于一次性迁移到加密存储，迁移后会被抹除
+            for key in ("webdav_url", "webdav_username"):
                 if key not in data:
                     data[key] = ""
             if "background_mode" not in data:
@@ -141,9 +200,13 @@ class CloudBackupApp:
                 data["auto_sync_on_startup"] = False
             if "auto_backup_config_to_cloud" not in data:
                 data["auto_backup_config_to_cloud"] = False
+            if "default_config_source" not in data:
+                data["default_config_source"] = SOURCE_ASK
+            if "debug_webdav_log" not in data:
+                data["debug_webdav_log"] = False
             return data
         return {"cloud_root": "", "autostart": False,
-                "webdav_url": "", "webdav_username": "", "webdav_password": "",
+                "webdav_url": "", "webdav_username": "",
                 "background_mode": True, "auto_sync_on_startup": False,
                 "auto_backup_config_to_cloud": False,
                 "games": []}
@@ -155,19 +218,25 @@ class CloudBackupApp:
                 "autostart": self.autostart,
                 "webdav_url": self.webdav_url,
                 "webdav_username": self.webdav_username,
-                "webdav_password": self.webdav_password,
+                # 注意：webdav_password 不再写入 config.json（明文），
+                # 改由 secrets_store 用系统加密存储单独保存。
                 "default_max_backups": self.default_max_backups,
                 "default_download_source": self.default_download_source,
                 "background_mode": self.background_mode,
                 "auto_sync_on_startup": self.auto_sync_on_startup,
                 "auto_backup_config_to_cloud": self.auto_backup_config_to_cloud,
+                "default_config_source": self.default_config_source,
+                "debug_webdav_log": self.debug_webdav_log,
                 "games": list(self.games_config)
             }
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        # 原子写：先临时文件再替换，避免写入中途崩溃损坏配置
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=4, ensure_ascii=False)
+        os.replace(tmp, CONFIG_FILE)
 
     def backup_config_to_cloud(self):
-        """自动备份游戏配置到云端（OneDrive 和 WebDAV），保留最近 10 条"""
+        """自动备份游戏配置到云端（OneDrive 和 WebDAV），保留最近 MAX_CONFIG_BACKUPS 条"""
         with self._config_lock:
             if not self.games_config:
                 return
@@ -176,15 +245,17 @@ class CloudBackupApp:
             config_data = [{
                 "name": g["name"], "save": g["save"],
                 "paused": g.get("paused", False),
-                "backup_methods": g.get("backup_methods", ["onedrive"]),
+                "backup_methods": g.get("backup_methods", [METHOD_ONEDRIVE]),
                 "max_backups": g.get("max_backups", self.default_max_backups)
             } for g in self.games_config]
             cloud_root = self.cloud_root
             webdav_url = self.webdav_url
 
+        ok_targets = []
+
         # OneDrive 备份
         if cloud_root:
-            cf_dir = os.path.join(cloud_root, "云存档配置备份")
+            cf_dir = os.path.join(cloud_root, CLOUD_CONFIG_BACKUP_DIR)
             try:
                 os.makedirs(cf_dir, exist_ok=True)
                 fp = os.path.join(cf_dir, backup_name)
@@ -194,13 +265,15 @@ class CloudBackupApp:
                 existing = [os.path.join(cf_dir, fn) for fn in os.listdir(cf_dir)
                            if fn.startswith("config_") and fn.endswith(".json")]
                 existing.sort(key=os.path.getmtime)
-                for old in existing[:-10]:
+                for old in existing[:-MAX_CONFIG_BACKUPS]:
                     try:
                         os.remove(old)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        self.debug_log(f"☁ [配置备份] 清理 OneDrive 旧备份失败 {old}: {e}")
+                ok_targets.append("OneDrive")
+            except Exception as e:
+                # 关键路径：OneDrive 写入失败必须可见，否则用户误以为配置已备份
+                self.log(f"⚠ [配置备份] 写入 OneDrive 失败: {e}")
 
         # WebDAV 备份
         if webdav_url:
@@ -213,32 +286,91 @@ class CloudBackupApp:
                         tmp_fp = os.path.join(tmpdir, backup_name)
                         with open(tmp_fp, "w", encoding="utf-8") as f:
                             json.dump(config_data, f, indent=4, ensure_ascii=False)
-                        remote_dir = "云存档配置备份"
-                        wc.mkcol(remote_dir)
-                        if wc.put_file(tmp_fp, f"{remote_dir}/{backup_name}"):
+                        if not wc.mkcol(CLOUD_CONFIG_BACKUP_DIR):
+                            self.log(f"⚠ [配置备份] WebDAV 创建目录失败: {CLOUD_CONFIG_BACKUP_DIR}")
+                        elif wc.put_file(tmp_fp, f"{CLOUD_CONFIG_BACKUP_DIR}/{backup_name}"):
                             # 清理旧备份
-                            items = wc.propfind(remote_dir)
+                            items = wc.propfind(CLOUD_CONFIG_BACKUP_DIR)
                             cf_files = [(n, h) for h, n in items if n.startswith("config_")]
                             cf_files.sort(key=lambda x: x[0], reverse=True)
-                            for name, _ in cf_files[10:]:
+                            for name, _ in cf_files[MAX_CONFIG_BACKUPS:]:
                                 try:
-                                    wc.delete_path(f"{remote_dir}/{name}")
-                                except Exception:
-                                    pass
+                                    wc.delete_path(f"{CLOUD_CONFIG_BACKUP_DIR}/{name}")
+                                except Exception as e:
+                                    self.debug_log(f"☁ [配置备份] 清理 WebDAV 旧备份失败 {name}: {e}")
+                            ok_targets.append("WebDAV")
+                        else:
+                            # 上传失败：用户以为备份成功实则没成功，必须提示
+                            self.log(f"⚠ [配置备份] WebDAV 上传失败: {backup_name}")
                     finally:
                         rmtree_safe(tmpdir)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.log(f"⚠ [配置备份] WebDAV 备份异常: {e}")
+
+        if ok_targets:
+            self.log(f"☁ 游戏配置已备份到: {', '.join(ok_targets)}")
 
     # ================= WebDAV 客户端 =================
     def get_webdav_client(self):
-        """创建 WebDAV 客户端（每次新建，避免复用全局 cookie 等状态导致 404）；未配置则返回 None"""
-        if not self.webdav_url:
-            return None
+        """创建 WebDAV 客户端（每次新建，避免复用全局 cookie 等状态导致 404）；未配置则返回 None。
+
+        线程安全：webdav_* 字段读取在 _config_lock 内进行，避免与 save_settings 并发改写竞态。
+        """
+        with self._config_lock:
+            if not self.webdav_url:
+                return None
+            url = self.webdav_url
+            user = self.webdav_username
+            pwd = self.webdav_password
         return WebDAVClient(
-            self.webdav_url, self.webdav_username, self.webdav_password,
-            log_cb=self.log
+            url, user, pwd,
+            log_cb=self.log,
+            debug_cb=self.debug_log if self.debug_webdav_log else None
         )
+
+    # ================= 备份列表查询（统一封装，消除重复） =================
+    def _list_onedrive_backups(self, game_name):
+        """列出某游戏在 OneDrive 上的所有备份目录名，按目录 mtime 倒序返回。
+
+        返回 list[str]（仅目录名，非完整路径）。无目录或不存在时返回 []。
+        用 mtime 排序比按文件名排序更准确（新格式目录名带 _mtime 后缀，但 mtime 仍是真值）。
+        """
+        with self._config_lock:
+            cloud_root = self.cloud_root
+        if not cloud_root:
+            return []
+        game_cloud_dir = os.path.join(cloud_root, game_name)
+        if not os.path.exists(game_cloud_dir):
+            return []
+        try:
+            names = [d for d in os.listdir(game_cloud_dir) if d.startswith("save_")]
+        except Exception:
+            return []
+        # 按目录的 mtime 倒序；mtime 读取失败则退回按名字倒序
+        def _mtime_key(n):
+            try:
+                return os.path.getmtime(os.path.join(game_cloud_dir, n))
+            except Exception:
+                return 0
+        names.sort(key=_mtime_key, reverse=True)
+        return names
+
+    def _list_webdav_backups(self, game_name):
+        """列出某游戏在 WebDAV 上的所有备份，按目录名倒序返回 list[(name, href)]。
+
+        WebDAV 目录名形如 save_20260512_143000_mtime1715500200，名字倒序即时间倒序。
+        失败返回 []。
+        """
+        wc = self.get_webdav_client()
+        if not wc:
+            return []
+        try:
+            items = wc.propfind(game_name)
+            backups = [(n, h) for h, n in items if n.startswith("save_")]
+            backups.sort(key=lambda x: x[0], reverse=True)
+            return backups
+        except Exception:
+            return []
 
     # ================= 唤醒机制 =================
     def check_wakeup_signal(self):
@@ -258,15 +390,22 @@ class CloudBackupApp:
         draw.ellipse((20, 15, 44, 30), fill=(255, 255, 255, 80))
         return image
 
+    def _tray_wrap(self, fn):
+        """把回调包装为 pystray 可用的菜单回调（签名 icon, item），
+        实际执行通过 root.after 编组到 tkinter 主线程，避免非主线程操作 GUI。"""
+        def wrapped(icon=None, item=None):
+            self.root.after(0, fn)
+        return wrapped
+
     def setup_tray(self):
-        self.icon_active = self.create_icon_image("#32CD32")
-        self.icon_inactive = self.create_icon_image("#A9A9A9")
+        self.icon_active = self.create_icon_image(COLOR_TRAY_ACTIVE)
+        self.icon_inactive = self.create_icon_image(COLOR_TRAY_INACTIVE)
         menu = pystray.Menu(
             item('显示主面板', self.show_window, default=True),
-            item('启动监控', self.start_monitoring),
-            item('停止监控', self.stop_monitoring),
+            item('启动监控', self._tray_wrap(self.start_monitoring)),
+            item('停止监控', self._tray_wrap(self.stop_monitoring)),
             pystray.Menu.SEPARATOR,
-            item('完全退出', self.quit_app)
+            item('完全退出', self._tray_wrap(self.quit_app))
         )
         self.tray_icon = pystray.Icon("GameCloudSync", self.icon_inactive, "云存档管家 (未监控)", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
@@ -299,6 +438,11 @@ class CloudBackupApp:
             self.log_text.see(tk.END)
             self.log_text.config(state="disabled")
         self.root.after(0, _write)
+
+    def debug_log(self, message):
+        """调试日志：仅在 debug_webdav_log=True 时输出"""
+        if self.debug_webdav_log:
+            self.log(message)
 
     def _disable_action_buttons(self, status_text="处理中…"):
         """禁用上传/下载按钮，显示状态文字"""
@@ -375,15 +519,15 @@ class CloudBackupApp:
         elif 'clam' in available:
             style.theme_use('clam')
 
-        # 颜色常量
-        BG = "#F5F6FA"
-        CARD = "#FFFFFF"
-        PRIMARY = "#4A6CF7"
-        SUCCESS = "#10B981"
-        DANGER = "#EF4444"
-        TEXT = "#1E293B"
-        TEXT_SEC = "#64748B"
-        BORDER = "#E2E8F0"
+        # 颜色常量（引用 constants.py 中的统一定义）
+        BG = COLOR_BG
+        CARD = COLOR_CARD
+        PRIMARY = COLOR_PRIMARY
+        SUCCESS = COLOR_SUCCESS
+        DANGER = COLOR_DANGER
+        TEXT = COLOR_TEXT
+        TEXT_SEC = COLOR_TEXT_SEC
+        BORDER = COLOR_BORDER
 
         self.root.configure(bg=BG)
 
@@ -405,21 +549,21 @@ class CloudBackupApp:
         # 按钮样式
         style.configure('TButton', font=(self._font_family, 9), padding=(12, 5), borderwidth=0)
         style.map('TButton',
-                  background=[('active', PRIMARY), ('!active', '#E2E8F0')],
+                  background=[('active', PRIMARY), ('!active', BORDER)],
                   foreground=[('active', '#FFFFFF')])
 
         # 主要操作按钮（添加/保存）
         style.configure('Success.TButton', background=SUCCESS, foreground='#FFFFFF',
                         font=(self._font_family, 9, 'bold'), borderwidth=0, padding=(12, 6))
         style.map('Success.TButton',
-                  background=[('active', '#059669'), ('!active', SUCCESS)],
+                  background=[('active', COLOR_SUCCESS_HOVER), ('!active', SUCCESS)],
                   foreground=[('active', '#FFFFFF')])
 
         # 启动/停止按钮
         style.configure('Start.TButton', background=SUCCESS, foreground='#FFFFFF',
                         font=(self._font_family, 9, 'bold'), padding=(12, 6), borderwidth=0)
         style.map('Start.TButton',
-                  background=[('active', '#059669'), ('!active', SUCCESS)],
+                  background=[('active', COLOR_SUCCESS_HOVER), ('!active', SUCCESS)],
                   foreground=[('active', '#FFFFFF')])
 
         # 次级按钮
@@ -429,7 +573,7 @@ class CloudBackupApp:
         style.configure('Danger.TButton', background=DANGER, foreground='#FFFFFF',
                         font=(self._font_family, 9, 'bold'), borderwidth=0, padding=(12, 6))
         style.map('Danger.TButton',
-                  background=[('active', '#DC2626'), ('!active', DANGER)],
+                  background=[('active', COLOR_DANGER_HOVER), ('!active', DANGER)],
                   foreground=[('active', '#FFFFFF')])
 
         # Checkbutton 样式
@@ -487,11 +631,11 @@ class CloudBackupApp:
         self.tree.bind("<<TreeviewSelect>>", lambda e: self._sync_checkbox_images(self.tree))
 
         # 标记样式
-        self.tree.tag_configure("synced", foreground="#10B981")
-        self.tree.tag_configure("cloud_new", foreground="#4A6CF7", background="#EBF0FF")
-        self.tree.tag_configure("local_new", foreground="#EF4444", background="#FEE2E2")
-        self.tree.tag_configure("none", foreground="#94A3B8")
-        self.tree.tag_configure("paused", foreground="#94A3B8", background="#F1F5F9")
+        self.tree.tag_configure("synced", foreground=COLOR_SUCCESS)
+        self.tree.tag_configure("cloud_new", foreground=COLOR_PRIMARY, background=COLOR_CLOUD_NEW_BG)
+        self.tree.tag_configure("local_new", foreground=COLOR_DANGER, background=COLOR_LOCAL_NEW_BG)
+        self.tree.tag_configure("none", foreground=COLOR_MUTED)
+        self.tree.tag_configure("paused", foreground=COLOR_MUTED, background=COLOR_PAUSED_BG)
 
         # ---------- 右键菜单 ----------
         self.backup_onedrive_var = tk.BooleanVar()
@@ -509,10 +653,10 @@ class CloudBackupApp:
         self.context_menu.add_separator()
         self.context_menu.add_checkbutton(label="备份到 OneDrive",
                                           variable=self.backup_onedrive_var,
-                                          command=lambda: self._toggle_backup_method("onedrive"))
+                                          command=lambda: self._toggle_backup_method(METHOD_ONEDRIVE))
         self.context_menu.add_checkbutton(label="备份到 WebDAV",
                                           variable=self.backup_webdav_var,
-                                          command=lambda: self._toggle_backup_method("webdav"))
+                                          command=lambda: self._toggle_backup_method(METHOD_WEBDAV))
         self.context_menu.add_separator()
         self.context_menu.add_command(label="📜 查看历史备份", command=self.show_history_backup)
         self.context_menu.add_separator()
@@ -541,7 +685,7 @@ class CloudBackupApp:
                                       pack_side="left", pack_padx=(0, 8))
 
         create_button(frame_ctrl, text="🔄 刷新状态", style='Secondary.TButton',
-                   command=self.refresh_list, width=100,
+                   command=lambda: self.refresh_list(check_webdav=True), width=100,
                    pack_side="left", pack_padx=(0, 8))
 
         self._btn_upload = create_button(frame_ctrl, text="⬆ 手动上传存档", style='Secondary.TButton',
@@ -555,17 +699,23 @@ class CloudBackupApp:
         create_button(frame_ctrl, text="📤 导出全部配置", style='Secondary.TButton',
                    command=self.export_config, width=120,
                    pack_side="right", pack_padx=(8, 0))
-        create_button(frame_ctrl, text="☁ 从云端恢复配置", style='Secondary.TButton',
-                   command=self.restore_config_from_cloud, width=140,
-                   pack_side="right", pack_padx=(8, 0))
         create_button(frame_ctrl, text="📥 批量导入配置", style='Secondary.TButton',
                    command=self.import_config, width=120,
                    pack_side="right", pack_padx=(8, 0))
+        self._btn_update_config = create_button(frame_ctrl, text="🔄 更新配置", style='Secondary.TButton',
+                   command=self._apply_cloud_config_update, width=120,
+                   pack_side="right", pack_padx=(8, 0))
+        create_button(frame_ctrl, text="☁ 从云端恢复配置", style='Secondary.TButton',
+                   command=self.restore_config_from_cloud, width=140,
+                   pack_side="right", pack_padx=(8, 0))
+
+        # "更新配置"初始置灰：没有待同步的云端新游戏时不可点击
+        self._btn_update_config.configure(state='disabled')
 
         # ---------- 日志 ----------
-        self.log_text = tk.Text(self.root, height=6, state="disabled", bg="#1E293B", fg="#E2E8F0",
+        self.log_text = tk.Text(self.root, height=6, state="disabled", bg=COLOR_LOG_BG, fg=COLOR_LOG_FG,
                                 font=("Consolas", 9), relief="flat", borderwidth=0,
-                                insertbackground="white", selectbackground="#4A6CF7")
+                                insertbackground="white", selectbackground=COLOR_PRIMARY)
         self.log_text.pack(fill="x", padx=15, pady=(0, 12))
 
         self.refresh_list()
@@ -580,7 +730,7 @@ class CloudBackupApp:
             parts.append(f"WebDAV: {self.webdav_url}")
         configured = bool(self.cloud_root or self.webdav_url)
         self.cloud_status_label.config(text=" | ".join(parts),
-                                       foreground="#10B981" if configured else "#EF4444")
+                                       foreground=COLOR_SUCCESS if configured else COLOR_DANGER)
 
     # ================= 添加游戏对话框（二级窗口） =================
     def open_add_game_dialog(self):
@@ -589,7 +739,7 @@ class CloudBackupApp:
         dialog.geometry("520x260")
         dialog.resizable(False, False)
         dialog.grab_set()
-        dialog.configure(bg="#F5F6FA")
+        dialog.configure(bg=COLOR_BG)
         center_window(dialog)
 
         content = ttk.Frame(dialog, padding=15)
@@ -654,12 +804,12 @@ class CloudBackupApp:
                 if not self.cloud_root:
                     messagebox.showwarning("提示", "OneDrive 云盘目录未设置，请在全局设置中配置。", parent=dialog)
                     return
-                methods.append("onedrive")
+                methods.append(METHOD_ONEDRIVE)
             if var_webdav.get():
                 if not self.webdav_url:
                     messagebox.showwarning("提示", "WebDAV 未配置，请在全局设置中设置。", parent=dialog)
                     return
-                methods.append("webdav")
+                methods.append(METHOD_WEBDAV)
             if not methods:
                 messagebox.showwarning("错误", "请至少选择一种备份方式！", parent=dialog)
                 return
@@ -674,9 +824,9 @@ class CloudBackupApp:
             if self.auto_backup_config_to_cloud:
                 self.backup_config_to_cloud()
             self.refresh_list()
-            if self.is_monitoring:
-                self.stop_monitoring()
-                self.start_monitoring()
+            was_monitoring = self.is_monitoring
+            self._restart_monitoring_if_active()
+            if was_monitoring:
                 # 自动上传第一次存档
                 if os.path.isdir(save_dir) and os.listdir(save_dir):
                     self.root.after(500, lambda: self._monitor_backup(name, save_dir))
@@ -699,13 +849,29 @@ class CloudBackupApp:
         settings_win.geometry("600x600")
         settings_win.resizable(False, False)
         settings_win.grab_set()
-        settings_win.configure(bg="#F5F6FA")
+        settings_win.configure(bg=COLOR_BG)
         center_window(settings_win)
 
         content = ttk.Frame(settings_win, padding=15)
         content.pack(fill="both", expand=True)
 
-        # ---- OneDrive 设置 ----
+        # 各区块由独立方法构建，返回需要保存时读取的控件引用
+        ctl = {}
+        ctl['cloud_entry'] = self._build_settings_onedrive(content)
+        ctl['webdav_url'], ctl['webdav_user'], ctl['webdav_pass'] = \
+            self._build_settings_webdav(content, settings_win)
+        ctl['max_backups_var'] = self._build_settings_backup_retention(content)
+        ctl['dl_var'], ctl['cf_src_var'], ctl['dl_map'], ctl['cf_map'] = \
+            self._build_settings_download_prefs(content)
+        ctl['autostart_var'], ctl['background_var'], ctl['autosync_var'], ctl['autocfg_var'] = \
+            self._build_settings_toggles(content)
+
+        # 点击窗口 X 按钮也自动保存
+        settings_win.protocol('WM_DELETE_WINDOW',
+                              lambda: self._apply_settings(settings_win, ctl))
+
+    def _build_settings_onedrive(self, content):
+        """OneDrive 设置区块，返回 cloud_entry"""
         frame_od = ttk.LabelFrame(content, text="OneDrive 设置", padding=(12, 10))
         frame_od.pack(fill="x", pady=(0, 8))
 
@@ -718,8 +884,10 @@ class CloudBackupApp:
         create_button(row_od, text="浏览", style='Secondary.TButton',
                    command=lambda: self.browse_dir(cloud_entry), width=60,
                    pack_side="left")
+        return cloud_entry
 
-        # ---- WebDAV 设置 ----
+    def _build_settings_webdav(self, content, settings_win):
+        """WebDAV 设置区块（含测试连接），返回 (url_entry, user_entry, pass_entry)"""
         frame_wd = ttk.LabelFrame(content, text="WebDAV 设置", padding=(12, 10))
         frame_wd.pack(fill="x", pady=8)
 
@@ -764,8 +932,10 @@ class CloudBackupApp:
         create_button(row_frame3, text="测试 WebDAV 连接", style='Secondary.TButton',
                    command=test_webdav, width=130,
                    pack_side="left", pack_padx=5)
+        return webdav_url_entry, webdav_user_entry, webdav_pass_entry
 
-        # ---- 默认备份数量 ----
+    def _build_settings_backup_retention(self, content):
+        """备份保留设置区块，返回 max_backups_var"""
         frame_mb = ttk.LabelFrame(content, text="备份保留设置", padding=(12, 10))
         frame_mb.pack(fill="x", pady=8)
 
@@ -775,8 +945,10 @@ class CloudBackupApp:
         max_backups_var = tk.IntVar(value=self.default_max_backups)
         ttk.Spinbox(row_mb, from_=1, to=99, width=8, textvariable=max_backups_var).pack(side="left", padx=5)
         ttk.Label(row_mb, text="（每个游戏可单独配置保留数量，修改后新游戏生效）", style='Hint.TLabel').pack(side="left")
+        return max_backups_var
 
-        # ---- 默认下载来源 ----
+    def _build_settings_download_prefs(self, content):
+        """下载偏好区块（默认下载来源 + 配置更新来源），返回 (dl_var, cf_src_var, dl_map, cf_map)"""
         frame_dl = ttk.LabelFrame(content, text="下载偏好", padding=(12, 10))
         frame_dl.pack(fill="x", pady=8)
 
@@ -784,106 +956,134 @@ class CloudBackupApp:
         row_dl.pack(fill="x")
         ttk.Label(row_dl, text="默认下载来源:", width=12, anchor="e").pack(side="left")
         dl_display = ["OneDrive 优先", "WebDAV 优先", "每次询问我"]
-        dl_keys = ["onedrive", "webdav", "ask"]
+        dl_keys = [METHOD_ONEDRIVE, METHOD_WEBDAV, SOURCE_ASK]
         dl_display_to_key = dict(zip(dl_display, dl_keys))
         dl_key_to_display = dict(zip(dl_keys, dl_display))
         dl_var = tk.StringVar(value=dl_key_to_display.get(self.default_download_source, dl_display[2]))
-        dl_combo = ttk.Combobox(row_dl, textvariable=dl_var, width=22,
-                                values=dl_display, state="readonly")
-        dl_combo.pack(side="left", padx=5)
+        ttk.Combobox(row_dl, textvariable=dl_var, width=22,
+                     values=dl_display, state="readonly").pack(side="left", padx=5)
 
-        # ---- 开机自启 ----
+        # 配置更新来源
+        row_cf_src = ttk.Frame(frame_dl)
+        row_cf_src.pack(fill="x", pady=(8, 0))
+        ttk.Label(row_cf_src, text="配置更新来源:", width=12, anchor="e").pack(side="left")
+        cf_src_display = ["OneDrive 优先", "WebDAV 优先", "每次询问我"]
+        cf_src_keys = [METHOD_ONEDRIVE, METHOD_WEBDAV, SOURCE_ASK]
+        cf_src_display_to_key = dict(zip(cf_src_display, cf_src_keys))
+        cf_src_key_to_display = dict(zip(cf_src_keys, cf_src_display))
+        cf_src_var = tk.StringVar(value=cf_src_key_to_display.get(self.default_config_source, cf_src_display[2]))
+        ttk.Combobox(row_cf_src, textvariable=cf_src_var, width=22,
+                     values=cf_src_display, state="readonly").pack(side="left", padx=5)
+        ttk.Label(row_cf_src, text="（启动检测 / 更新配置时优先从哪个源获取游戏配置）",
+                 style='Hint.TLabel').pack(side="left", padx=5)
+        return dl_var, cf_src_var, dl_display_to_key, cf_src_display_to_key
+
+    def _build_settings_toggles(self, content):
+        """开关项区块（自启/后台/自动同步/自动备份配置），返回四个 BooleanVar"""
         frame_auto = ttk.Frame(content)
         frame_auto.pack(fill="x", pady=10)
         autostart_var = tk.BooleanVar(value=self.autostart)
         ttk.Checkbutton(frame_auto, text="开机自动启动（添加到系统启动项）",
                        variable=autostart_var).pack(anchor="w")
 
-        # ---- 后台运行 ----
         frame_bg = ttk.Frame(content)
         frame_bg.pack(fill="x", pady=4)
         background_var = tk.BooleanVar(value=self.background_mode)
         ttk.Checkbutton(frame_bg, text="后台运行（关闭窗口后最小化到托盘继续监控）",
                        variable=background_var).pack(anchor="w")
 
-        # ---- 启动时自动同步 ----
         frame_as = ttk.Frame(content)
         frame_as.pack(fill="x", pady=4)
         autosync_var = tk.BooleanVar(value=self.auto_sync_on_startup)
         ttk.Checkbutton(frame_as, text="打开时自动备份或下载（启动时若存档有变更则自动上传/下载）",
                        variable=autosync_var).pack(anchor="w")
 
-        # ---- 自动备份配置到云端 ----
         frame_acc = ttk.Frame(content)
         frame_acc.pack(fill="x", pady=4)
         autocfg_var = tk.BooleanVar(value=self.auto_backup_config_to_cloud)
         ttk.Checkbutton(frame_acc, text="自动保存游戏配置到云端（增删改游戏时自动备份配置；启动时检测云端更新）",
                        variable=autocfg_var).pack(anchor="w")
+        return autostart_var, background_var, autosync_var, autocfg_var
 
-        # ---- 保存按钮 ----
-        def save_settings():
-            new_cloud = cloud_entry.get().strip()
-            new_webdav_url = webdav_url_entry.get().strip()
-            new_webdav_user = webdav_user_entry.get().strip()
-            new_webdav_pass = webdav_pass_entry.get().strip()
-            new_max_backups = max_backups_var.get()
-            new_dl_source = dl_display_to_key.get(dl_var.get(), "ask")
+    def _apply_settings(self, settings_win, ctl):
+        """保存全局设置：读取各控件值，写回配置，必要时重启监控。"""
+        new_cloud = ctl['cloud_entry'].get().strip()
+        new_webdav_url = ctl['webdav_url'].get().strip()
+        new_webdav_user = ctl['webdav_user'].get().strip()
+        new_webdav_pass = ctl['webdav_pass'].get().strip()
+        new_max_backups = ctl['max_backups_var'].get()
+        new_dl_source = ctl['dl_map'].get(ctl['dl_var'].get(), SOURCE_ASK)
+        new_cf_source = ctl['cf_map'].get(ctl['cf_src_var'].get(), SOURCE_ASK)
 
-            need_restart = False
-            with self._config_lock:
-                if new_cloud != self.cloud_root:
-                    self.cloud_root = new_cloud
-                    need_restart = True
-                if (new_webdav_url != self.webdav_url or
-                    new_webdav_user != self.webdav_username or
-                    new_webdav_pass != self.webdav_password):
-                    self.webdav_url = new_webdav_url
-                    self.webdav_username = new_webdav_user
-                    self.webdav_password = new_webdav_pass
-                    need_restart = True
-                self.default_max_backups = new_max_backups
-                self.default_download_source = new_dl_source
+        need_restart = False
+        password_changed = False
+        with self._config_lock:
+            if new_cloud != self.cloud_root:
+                self.cloud_root = new_cloud
+                need_restart = True
+            if (new_webdav_url != self.webdav_url or
+                new_webdav_user != self.webdav_username or
+                new_webdav_pass != self.webdav_password):
+                self.webdav_url = new_webdav_url
+                self.webdav_username = new_webdav_user
+                self.webdav_password = new_webdav_pass
+                need_restart = True
+                password_changed = True
+            self.default_max_backups = new_max_backups
+            self.default_download_source = new_dl_source
+            self.default_config_source = new_cf_source
 
-            # 后台运行
-            self.background_mode = background_var.get()
-            if self.background_mode:
-                self.root.protocol('WM_DELETE_WINDOW', self.hide_window)
+        # WebDAV 密码单独写入加密存储（不进 config.json）。
+        # 若清空了 WebDAV 地址/用户名，则一并清除已存密码。
+        if password_changed:
+            if new_webdav_url and new_webdav_user and new_webdav_pass:
+                if not secrets_store.save_password(_APP_DIR, new_webdav_pass):
+                    self.log("⚠ WebDAV 密码无法写入系统加密存储，将仅保存在内存（重启后丢失）。")
             else:
-                self.root.protocol('WM_DELETE_WINDOW', self.quit_app)
+                secrets_store.clear_password(_APP_DIR)
 
-            # 启动时自动同步
-            self.auto_sync_on_startup = autosync_var.get()
+        # 后台运行
+        self.background_mode = ctl['background_var'].get()
+        if self.background_mode:
+            self.root.protocol('WM_DELETE_WINDOW', self.hide_window)
+        else:
+            self.root.protocol('WM_DELETE_WINDOW', self.quit_app)
 
-            # 自动备份配置到云端
-            self.auto_backup_config_to_cloud = autocfg_var.get()
+        # 启动时自动同步
+        self.auto_sync_on_startup = ctl['autosync_var'].get()
 
-            # 自启动
-            autostart_enable = autostart_var.get()
-            if autostart_enable != self.autostart:
-                self.set_autostart(autostart_enable)
+        # 自动备份配置到云端
+        self.auto_backup_config_to_cloud = ctl['autocfg_var'].get()
 
-            self.save_config()
-            self.update_cloud_status_label()
-            # 监控重启延迟到窗口关闭后执行，避免关闭卡顿
-            if need_restart and self.is_monitoring:
-                self.root.after(50, lambda: (self.stop_monitoring(), self.start_monitoring()))
-            self.log("⚙ 全局设置已保存。")
-            settings_win.destroy()
+        # 自启动
+        autostart_enable = ctl['autostart_var'].get()
+        if autostart_enable != self.autostart:
+            self.set_autostart(autostart_enable)
 
-        # 点击窗口 X 按钮也自动保存
-        settings_win.protocol('WM_DELETE_WINDOW', save_settings)
+        self.save_config()
+        self.update_cloud_status_label()
+        # 监控重启延迟到窗口关闭后执行，避免关闭卡顿
+        if need_restart and self.is_monitoring:
+            self.root.after(50, self._restart_monitoring_if_active)
+        self.log("⚙ 全局设置已保存。")
+        settings_win.destroy()
 
     # ================= 游戏列表与状态 =================
-    def get_sync_status(self, game):
+    def get_sync_status(self, game, check_webdav=False):
+        """获取同步状态。
+
+        默认不访问 WebDAV，避免启动/刷新列表时被网络请求拖慢；点击“刷新状态”时
+        传入 check_webdav=True 才做 WebDAV PROPFIND。
+        """
         if game.get("paused", False):
             return "⏸ 已暂停", "paused"
-        methods = game.get("backup_methods", ["onedrive"])
+        methods = game.get("backup_methods", [METHOD_ONEDRIVE])
         if not methods:
             return "未设置备份方式", "none"
 
         save_dir = game["save"]
-        has_onedrive = "onedrive" in methods and self.cloud_root
-        has_webdav = "webdav" in methods and self.webdav_url
+        has_onedrive = METHOD_ONEDRIVE in methods and self.cloud_root
+        has_webdav = METHOD_WEBDAV in methods and self.webdav_url
 
         if not has_onedrive and not has_webdav:
             return "备份目标未配置", "none"
@@ -893,12 +1093,10 @@ class CloudBackupApp:
         # 检查 OneDrive 云端（基于文件实际 mtime，准确可靠）
         od_cloud_time = 0
         if has_onedrive:
-            game_cloud_dir = os.path.join(self.cloud_root, game["name"])
-            if os.path.exists(game_cloud_dir):
-                backups = [os.path.join(game_cloud_dir, d) for d in os.listdir(game_cloud_dir) if d.startswith("save_")]
-                if backups:
-                    backups.sort(key=os.path.getmtime, reverse=True)
-                    od_cloud_time = get_latest_mtime(backups[0])
+            od_names = self._list_onedrive_backups(game["name"])
+            if od_names:
+                latest_od_dir = os.path.join(self.cloud_root, game["name"], od_names[0])
+                od_cloud_time = get_latest_mtime(latest_od_dir)
 
         # 检查 WebDAV 云端
         #   新格式目录名: save_20260512_143000_mtime1715500200
@@ -906,26 +1104,24 @@ class CloudBackupApp:
         #   旧格式目录名: save_20260512_143000（兼容，仅能判断"本地较新"）
         wd_backup_mtime = 0  # 新格式：备份时本地文件的最新 mtime
         wd_dir_ts = 0         # 旧格式后备：目录名中的时间戳
-        if has_webdav and self.webdav_url:
-            wc = self.get_webdav_client()
-            if wc:
+        if has_webdav and self.webdav_url and check_webdav:
+            wd_backups = self._list_webdav_backups(game["name"])
+            if wd_backups:
+                latest_name = wd_backups[0][0]
                 try:
-                    items = wc.propfind(game["name"])
-                    save_names = [n for _, n in items if n.startswith("save_")]
-                    if save_names:
-                        save_names.sort(reverse=True)
-                        try:
-                            latest_name = save_names[0]
-                            ts_str, bk_mtime = parse_backup_name(latest_name)
-                            if bk_mtime > 0:
-                                wd_backup_mtime = bk_mtime
-                                wd_dir_ts = time.mktime(datetime.strptime(ts_str, "%Y%m%d_%H%M%S").timetuple())
-                            else:
-                                wd_dir_ts = time.mktime(datetime.strptime(ts_str, "%Y%m%d_%H%M%S").timetuple())
-                        except Exception:
-                            pass
+                    ts_str, bk_mtime = parse_backup_name(latest_name)
+                    if bk_mtime > 0:
+                        wd_backup_mtime = bk_mtime
+                        wd_dir_ts = time.mktime(datetime.strptime(ts_str, "%Y%m%d_%H%M%S").timetuple())
+                    else:
+                        wd_dir_ts = time.mktime(datetime.strptime(ts_str, "%Y%m%d_%H%M%S").timetuple())
                 except Exception:
                     pass
+
+        # 启动时不做 WebDAV 网络请求，否则每个 WebDAV 游戏都会串行 PROPFIND，
+        # 会明显拖慢主窗口显示。用户点击“刷新状态”时再检查 WebDAV。
+        if has_webdav and not check_webdav and od_cloud_time == 0:
+            return "WebDAV 未检查（点刷新）", "none"
 
         # 确定有效的云端时间
         # OneDrive 文件 mtime 最准确，优先使用
@@ -946,36 +1142,36 @@ class CloudBackupApp:
             return "☁ 本地无档 (可下载)", "cloud_new"
 
         # 本地较新：本地 mtime 晚于云端，说明有未备份的改动
-        if local_time - cloud_time > 3:
+        if local_time - cloud_time > SYNC_THRESHOLD_SECONDS:
             return "⚠ 本地较新 (未备份)", "local_new"
 
         # 云端较新：
         # - OneDrive 或 WebDAV 新格式：cloud_time 是文件实际 mtime，可准确判断
         # - WebDAV 旧格式：目录名时间戳无法区分"刚备份了旧文件"和"其他设备上传了新存档"
         if od_cloud_time > 0 or wd_backup_mtime > 0:
-            if cloud_time - local_time > 3:
+            if cloud_time - local_time > SYNC_THRESHOLD_SECONDS:
                 return "✨ 云端较新 (请下载)", "cloud_new"
 
         return "✅ 已完全同步", "synced"
 
     def get_backup_display(self, game):
         """获取备份方式的显示文本"""
-        methods = game.get("backup_methods", ["onedrive"])
+        methods = game.get("backup_methods", [METHOD_ONEDRIVE])
         labels = []
         for m in methods:
-            if m == "onedrive":
+            if m == METHOD_ONEDRIVE:
                 labels.append("OneDrive" if self.cloud_root else "OneDrive(未配置)")
-            elif m == "webdav":
+            elif m == METHOD_WEBDAV:
                 labels.append("WebDAV" if self.webdav_url else "WebDAV(未配置)")
         return " | ".join(labels) if labels else "无"
 
-    def refresh_list(self):
+    def refresh_list(self, check_webdav=False):
         for item in self.tree.get_children():
             self.tree.delete(item)
         with self._config_lock:
             games = list(self.games_config)
         for game in games:
-            status_text, tag = self.get_sync_status(game)
+            status_text, tag = self.get_sync_status(game, check_webdav=check_webdav)
             backup_display = self.get_backup_display(game)
             self.tree.insert("", "end",
                              values=(game["name"], game["save"], backup_display, status_text),
@@ -1021,7 +1217,7 @@ class CloudBackupApp:
         game = self._get_game(game_name)
         if not game:
             return
-        methods = game.get("backup_methods", ["onedrive"])
+        methods = game.get("backup_methods", [METHOD_ONEDRIVE])
         max_backups = game.get("max_backups", self.default_max_backups)
         cloud_root = self.cloud_root
         webdav_url = self.webdav_url
@@ -1029,7 +1225,7 @@ class CloudBackupApp:
         success = []
 
         # --- OneDrive 备份 ---
-        if "onedrive" in methods and cloud_root:
+        if METHOD_ONEDRIVE in methods and cloud_root:
             backup_folder = f"save_{timestamp}"
             target_path = os.path.join(cloud_root, game_name, backup_folder)
             try:
@@ -1041,7 +1237,7 @@ class CloudBackupApp:
                 self.log(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ {game_name}: OneDrive 备份失败 ({e})")
 
         # --- WebDAV 备份 ---
-        if "webdav" in methods and webdav_url:
+        if METHOD_WEBDAV in methods and webdav_url:
             wc = self.get_webdav_client()
             if wc:
                 try:
@@ -1073,28 +1269,20 @@ class CloudBackupApp:
             for old_backup in all_backups[:-max_backups]:
                 try:
                     rmtree_safe(old_backup)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.debug_log(f"🗑 清理 OneDrive 旧备份失败 {old_backup}: {e}")
 
     def _cleanup_webdav_backups(self, wc, game_name, max_backups=None):
         """清理 WebDAV 旧备份，保留最近 max_backups 个"""
         if max_backups is None:
             max_backups = DEFAULT_MAX_BACKUPS
-        try:
-            items = wc.propfind(game_name)
-            backups = []
-            for href, name in items:
-                if name.startswith("save_"):
-                    backups.append((name, href))
-            backups.sort(key=lambda x: x[0], reverse=True)
-            if len(backups) > max_backups:
-                for name, _ in backups[max_backups:]:
-                    try:
-                        wc.delete_path(f"{game_name}/{name}")
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        backups = self._list_webdav_backups(game_name)
+        if len(backups) > max_backups:
+            for name, _ in backups[max_backups:]:
+                try:
+                    wc.delete_path(f"{game_name}/{name}")
+                except Exception as e:
+                    self.debug_log(f"🗑 清理 WebDAV 旧备份失败 {game_name}/{name}: {e}")
 
     # ================= 游戏管理 =================
     def add_game(self):
@@ -1115,9 +1303,7 @@ class CloudBackupApp:
             self.save_config()
             if self.auto_backup_config_to_cloud:
                 self.backup_config_to_cloud()
-            if self.is_monitoring:
-                self.stop_monitoring()
-                self.start_monitoring()
+            self._restart_monitoring_if_active()
 
     def edit_game(self):
         selected = self.tree.selection()
@@ -1134,7 +1320,7 @@ class CloudBackupApp:
         edit_win.geometry("500x300")
         edit_win.resizable(False, False)
         edit_win.grab_set()
-        edit_win.configure(bg="#F5F6FA")
+        edit_win.configure(bg=COLOR_BG)
         center_window(edit_win)
 
         content = ttk.Frame(edit_win, padding=15)
@@ -1157,9 +1343,9 @@ class CloudBackupApp:
         ttk.Label(content, text="备份方式:", style='Dialog.TLabel').grid(row=2, column=0, padx=(5, 10), pady=(10, 5), sticky="e")
         frame_m = ttk.Frame(content)
         frame_m.grid(row=2, column=1, padx=5, pady=(10, 5), sticky="w")
-        cur_methods = game.get("backup_methods", ["onedrive"])
-        var_od = tk.BooleanVar(value="onedrive" in cur_methods)
-        var_wd = tk.BooleanVar(value="webdav" in cur_methods)
+        cur_methods = game.get("backup_methods", [METHOD_ONEDRIVE])
+        var_od = tk.BooleanVar(value=METHOD_ONEDRIVE in cur_methods)
+        var_wd = tk.BooleanVar(value=METHOD_WEBDAV in cur_methods)
         ttk.Checkbutton(frame_m, text="OneDrive", variable=var_od).pack(side="left", padx=(0, 15))
         ttk.Checkbutton(frame_m, text="WebDAV", variable=var_wd).pack(side="left")
 
@@ -1176,9 +1362,9 @@ class CloudBackupApp:
                 return
             new_methods = []
             if var_od.get():
-                new_methods.append("onedrive")
+                new_methods.append(METHOD_ONEDRIVE)
             if var_wd.get():
-                new_methods.append("webdav")
+                new_methods.append(METHOD_WEBDAV)
             if not new_methods:
                 messagebox.showwarning("错误", "请至少选择一种备份方式！", parent=edit_win)
                 return
@@ -1190,9 +1376,7 @@ class CloudBackupApp:
             if self.auto_backup_config_to_cloud:
                 self.backup_config_to_cloud()
             self.refresh_list()
-            if self.is_monitoring:
-                self.stop_monitoring()
-                self.start_monitoring()
+            self._restart_monitoring_if_active()
             self.log(f"✏ 游戏【{new_name}】配置已修改。")
             edit_win.destroy()
 
@@ -1222,9 +1406,9 @@ class CloudBackupApp:
                     self.context_menu.entryconfig(6, label="▶ 恢复同步")
                 else:
                     self.context_menu.entryconfig(6, label="⏸ 暂停同步")
-                methods = game.get("backup_methods", ["onedrive"])
-                self.backup_onedrive_var.set("onedrive" in methods)
-                self.backup_webdav_var.set("webdav" in methods)
+                methods = game.get("backup_methods", [METHOD_ONEDRIVE])
+                self.backup_onedrive_var.set(METHOD_ONEDRIVE in methods)
+                self.backup_webdav_var.set(METHOD_WEBDAV in methods)
             self.context_menu.post(event.x_root, event.y_root)
 
     def _toggle_backup_method(self, method):
@@ -1234,33 +1418,31 @@ class CloudBackupApp:
         game = self._get_game(self._selected_game_name)
         if not game:
             return
-        methods = game.get("backup_methods", ["onedrive"])
+        methods = game.get("backup_methods", [METHOD_ONEDRIVE])
 
-        if method == "onedrive":
-            if "onedrive" in methods:
-                methods.remove("onedrive")
+        if method == METHOD_ONEDRIVE:
+            if METHOD_ONEDRIVE in methods:
+                methods.remove(METHOD_ONEDRIVE)
             else:
                 if not self.cloud_root:
                     messagebox.showwarning("提示", "OneDrive 云盘目录未设置，请先在全局设置中配置。")
                     self.backup_onedrive_var.set(False)
                     return
-                methods.append("onedrive")
-        elif method == "webdav":
-            if "webdav" in methods:
-                methods.remove("webdav")
+                methods.append(METHOD_ONEDRIVE)
+        elif method == METHOD_WEBDAV:
+            if METHOD_WEBDAV in methods:
+                methods.remove(METHOD_WEBDAV)
             else:
                 if not self.webdav_url:
                     messagebox.showwarning("提示", "WebDAV 未配置，请先在全局设置中配置。")
                     self.backup_webdav_var.set(False)
                     return
-                methods.append("webdav")
+                methods.append(METHOD_WEBDAV)
 
         game["backup_methods"] = methods
         self.save_config()
         self.refresh_list()
-        if self.is_monitoring:
-            self.stop_monitoring()
-            self.start_monitoring()
+        self._restart_monitoring_if_active()
         self.log(f"⚙ 游戏【{self._selected_game_name}】备份方式已更新: {', '.join(methods) if methods else '无'}")
 
     def toggle_pause(self):
@@ -1279,9 +1461,7 @@ class CloudBackupApp:
                 self.log(f"⚙ 游戏【{game_name}】已{state_label}同步。")
         self.save_config()
         self.refresh_list()
-        if self.is_monitoring:
-            self.stop_monitoring()
-            self.start_monitoring()
+        self._restart_monitoring_if_active()
 
     def open_local_folder(self):
         """打开选中的游戏本地存档文件夹"""
@@ -1307,15 +1487,15 @@ class CloudBackupApp:
         game = self._get_game(game_name)
         if not game:
             return
-        methods = game.get("backup_methods", ["onedrive"])
+        methods = game.get("backup_methods", [METHOD_ONEDRIVE])
 
         # 优先打开 OneDrive 本地目录（更直观），否则打开 WebDAV 网址
-        if "onedrive" in methods and self.cloud_root:
+        if METHOD_ONEDRIVE in methods and self.cloud_root:
             cloud_dir = os.path.join(self.cloud_root, game_name)
             if not os.path.exists(cloud_dir):
                 os.makedirs(cloud_dir, exist_ok=True)
             os.startfile(cloud_dir)
-        elif "webdav" in methods and self.webdav_url:
+        elif METHOD_WEBDAV in methods and self.webdav_url:
             wd_url = self.webdav_url.rstrip('/')
             import urllib.parse
             encoded_name = urllib.parse.quote(game_name, safe='')
@@ -1340,7 +1520,7 @@ class CloudBackupApp:
             game = self._get_game(game_name)
             if not game:
                 continue
-            methods = game.get("backup_methods", ["onedrive"])
+            methods = game.get("backup_methods", [METHOD_ONEDRIVE])
             if not methods:
                 continue
             if not os.path.isdir(save_dir) or not os.listdir(save_dir):
@@ -1365,7 +1545,7 @@ class CloudBackupApp:
         if len(selected) > 1:
             # 询问偏好
             batch_pref = self.default_download_source
-            if batch_pref == "ask":
+            if batch_pref == SOURCE_ASK:
                 batch_pref = self._ask_batch_download_source()
                 if not batch_pref:
                     return
@@ -1384,7 +1564,7 @@ class CloudBackupApp:
                     game = self._get_game(game_name)
                     if not game:
                         continue
-                    methods = game.get("backup_methods", ["onedrive"])
+                    methods = game.get("backup_methods", [METHOD_ONEDRIVE])
                     source = self._find_latest_backup(game_name, methods)
                     if not source:
                         self.log(f"🔄 ⚠ {game_name}: 未找到任何云端备份，跳过")
@@ -1409,28 +1589,22 @@ class CloudBackupApp:
         game = self._get_game(game_name)
         if not game:
             return
-        methods = game.get("backup_methods", ["onedrive"])
+        methods = game.get("backup_methods", [METHOD_ONEDRIVE])
 
         # 收集可用源
         sources = []
-        if "onedrive" in methods and self.cloud_root:
-            game_cloud_dir = os.path.join(self.cloud_root, game_name)
-            if os.path.exists(game_cloud_dir):
-                backups = [os.path.join(game_cloud_dir, d) for d in os.listdir(game_cloud_dir) if d.startswith("save_")]
-                if backups:
-                    backups.sort(key=os.path.getmtime, reverse=True)
-                    sources.append(("OneDrive", "onedrive", backups[0]))
-        if "webdav" in methods and self.webdav_url:
-            wc = self.get_webdav_client()
-            if wc:
-                try:
-                    items = wc.propfind(game_name)
-                    save_names = [(n, h) for h, n in items if n.startswith("save_")]
-                    if save_names:
-                        save_names.sort(key=lambda x: x[0], reverse=True)
-                        sources.append(("WebDAV", "webdav", save_names[0][0]))
-                except Exception:
-                    pass
+        if METHOD_ONEDRIVE in methods and self.cloud_root:
+            od_names = self._list_onedrive_backups(game_name)
+            if od_names:
+                latest_od = os.path.join(self.cloud_root, game_name, od_names[0])
+                sources.append(("OneDrive", METHOD_ONEDRIVE, latest_od))
+        if METHOD_WEBDAV in methods and self.webdav_url:
+            wd_backups = self._list_webdav_backups(game_name)
+            if wd_backups:
+                sources.append(("WebDAV", METHOD_WEBDAV, wd_backups[0][0]))
+                self.log(f"🔄 🌐 {game_name}: WebDAV 发现 {len(wd_backups)} 个备份")
+            else:
+                self.log(f"🔄 🌐 {game_name}: WebDAV 未发现 save_* 备份")
 
         if not sources:
             return messagebox.showinfo("提示", "未找到任何云端备份！")
@@ -1438,7 +1612,7 @@ class CloudBackupApp:
         # 选择恢复源
         if len(sources) == 1:
             chosen_source = sources[0]
-        elif self.default_download_source == "ask":
+        elif self.default_download_source == SOURCE_ASK:
             chosen_source = self._ask_download_source(game_name, sources)
             if not chosen_source:
                 return
@@ -1447,8 +1621,8 @@ class CloudBackupApp:
 
         source_label, source_key, source_path = chosen_source
         local_ts = get_latest_mtime(save_dir)
-        cloud_ts = get_latest_mtime(source_path) if source_key == "onedrive" else 0
-        if source_key == "webdav":
+        cloud_ts = get_latest_mtime(source_path) if source_key == METHOD_ONEDRIVE else 0
+        if source_key == METHOD_WEBDAV:
             try:
                 ts_str, bk_mtime = parse_backup_name(source_path)
                 cloud_ts = time.mktime(datetime.strptime(ts_str, "%Y%m%d_%H%M%S").timetuple())
@@ -1474,13 +1648,13 @@ class CloudBackupApp:
         self.worker.submit(run, on_done=lambda: (self.refresh_list(), self._enable_action_buttons()))
 
     def _ask_batch_download_source(self):
-        """批量下载前询问用户偏好来源，返回 "onedrive" / "webdav" 或 None（取消）"""
+        """批量下载前询问用户偏好来源，返回 METHOD_ONEDRIVE / METHOD_WEBDAV 或 None（取消）"""
         choice_win = tk.Toplevel(self.root)
         choice_win.title("选择下载来源")
         choice_win.geometry("360x150")
         choice_win.resizable(False, False)
         choice_win.grab_set()
-        choice_win.configure(bg="#F5F6FA")
+        choice_win.configure(bg=COLOR_BG)
         choice_win.result = None
 
         content = ttk.Frame(choice_win, padding=20)
@@ -1495,10 +1669,10 @@ class CloudBackupApp:
             choice_win.destroy()
 
         create_button(btn_frame, text="OneDrive 优先", style='Success.TButton',
-                   command=lambda: choose("onedrive"), width=120,
+                   command=lambda: choose(METHOD_ONEDRIVE), width=120,
                    pack_side="left", pack_padx=(0, 10))
         create_button(btn_frame, text="WebDAV 优先", style='Secondary.TButton',
-                   command=lambda: choose("webdav"), width=120,
+                   command=lambda: choose(METHOD_WEBDAV), width=120,
                    pack_side="left")
 
         center_window(choice_win)
@@ -1512,7 +1686,7 @@ class CloudBackupApp:
         choice_win.geometry("380x160")
         choice_win.resizable(False, False)
         choice_win.grab_set()
-        choice_win.configure(bg="#F5F6FA")
+        choice_win.configure(bg=COLOR_BG)
         center_window(choice_win)
         choice_win.result = None
 
@@ -1526,7 +1700,7 @@ class CloudBackupApp:
             choice_win.destroy()
 
         for label, key, path in sources:
-            info = path if key == "onedrive" else f"WebDAV: {path}"
+            info = path if key == METHOD_ONEDRIVE else f"WebDAV: {path}"
             create_button(content, text=f"从 {label} 恢复", style='Secondary.TButton',
                        command=lambda s=(label, key, path): choose(s), width=140).pack(pady=3)
 
@@ -1537,7 +1711,7 @@ class CloudBackupApp:
         """执行实际的恢复操作（在后台线程中运行，不做 GUI 更新）"""
         source_label, source_key, source_path = source
         try:
-            if source_key == "onedrive":
+            if source_key == METHOD_ONEDRIVE:
                 if os.path.exists(save_dir):
                     rmtree_safe(save_dir)
                 shutil.copytree(source_path, save_dir)
@@ -1546,6 +1720,7 @@ class CloudBackupApp:
                 if not wc:
                     raise Exception("无法连接 WebDAV")
                 remote_dir = f"{game_name}/{source_path}"
+                self.log(f"🔄 🌐 WebDAV 下载: {remote_dir} ...")
                 # 先下载到临时目录，成功后再原子替换，避免下载失败清空本地存档
                 tmp_dir = save_dir + ".tmp"
                 if os.path.exists(tmp_dir):
@@ -1553,12 +1728,12 @@ class CloudBackupApp:
                 file_count = wc.download_dir(remote_dir, tmp_dir)
                 if file_count == 0:
                     rmtree_safe(tmp_dir)
-                    raise Exception("WebDAV 下载失败：未获取到任何文件")
+                    raise Exception(f"WebDAV 下载失败：'{remote_dir}' 未获取到任何文件（检查目录是否存在、文件名编码是否匹配）")
                 if os.path.exists(save_dir):
                     rmtree_safe(save_dir)
                 os.rename(tmp_dir, save_dir)
                 apply_backup_mtime(source_path, save_dir)
-
+                self.log(f"🔄 🌐 WebDAV 下载完成: {file_count} 个文件")
             self.log(f"🔄 ✅ {game_name}: 从 {source_label} 恢复成功！")
         except Exception as e:
             self.log(f"🔄 ❌ {game_name}: 恢复失败 ({e})")
@@ -1572,38 +1747,29 @@ class CloudBackupApp:
         wd_best = None
         wd_ts = 0
 
-        if "onedrive" in methods and self.cloud_root:
-            game_cloud_dir = os.path.join(self.cloud_root, game_name)
-            if os.path.exists(game_cloud_dir):
-                backups = [os.path.join(game_cloud_dir, d) for d in os.listdir(game_cloud_dir) if d.startswith("save_")]
-                if backups:
-                    backups.sort(key=os.path.getmtime, reverse=True)
-                    od_ts = get_latest_mtime(backups[0])
-                    od_best = ("OneDrive", "onedrive", backups[0])
+        if METHOD_ONEDRIVE in methods and self.cloud_root:
+            od_names = self._list_onedrive_backups(game_name)
+            if od_names:
+                latest_od = os.path.join(self.cloud_root, game_name, od_names[0])
+                od_ts = get_latest_mtime(latest_od)
+                od_best = ("OneDrive", METHOD_ONEDRIVE, latest_od)
 
-        if "webdav" in methods and self.webdav_url:
-            wc = self.get_webdav_client()
-            if wc:
+        if METHOD_WEBDAV in methods and self.webdav_url:
+            wd_backups = self._list_webdav_backups(game_name)
+            if wd_backups:
                 try:
-                    items = wc.propfind(game_name)
-                    save_names = [(n, h) for h, n in items if n.startswith("save_")]
-                    if save_names:
-                        save_names.sort(key=lambda x: x[0], reverse=True)
-                        try:
-                            ts_str, bk_mtime = parse_backup_name(save_names[0][0])
-                            if bk_mtime > 0:
-                                wd_ts = bk_mtime
-                            else:
-                                wd_ts = time.mktime(datetime.strptime(ts_str, "%Y%m%d_%H%M%S").timetuple())
-                            wd_best = ("WebDAV", "webdav", save_names[0][0])
-                        except Exception:
-                            pass
+                    ts_str, bk_mtime = parse_backup_name(wd_backups[0][0])
+                    if bk_mtime > 0:
+                        wd_ts = bk_mtime
+                    else:
+                        wd_ts = time.mktime(datetime.strptime(ts_str, "%Y%m%d_%H%M%S").timetuple())
+                    wd_best = ("WebDAV", METHOD_WEBDAV, wd_backups[0][0])
                 except Exception:
                     pass
 
-        if pref == "onedrive" and od_best:
+        if pref == METHOD_ONEDRIVE and od_best:
             return od_best
-        if pref == "webdav" and wd_best:
+        if pref == METHOD_WEBDAV and wd_best:
             return wd_best
         if od_ts > wd_ts:
             return od_best
@@ -1618,13 +1784,13 @@ class CloudBackupApp:
         game = self._get_game(game_name)
         if not game:
             return
-        methods = game.get("backup_methods", ["onedrive"])
+        methods = game.get("backup_methods", [METHOD_ONEDRIVE])
 
         hist_win = tk.Toplevel(self.root)
         hist_win.title(f"历史备份 - {game_name}")
         hist_win.geometry("700x420")
         hist_win.grab_set()
-        hist_win.configure(bg="#F5F6FA")
+        hist_win.configure(bg=COLOR_BG)
         center_window(hist_win)
 
         # 用 Notebook 分 Tab 显示 OneDrive 和 WebDAV 备份
@@ -1632,11 +1798,10 @@ class CloudBackupApp:
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
         # ==== OneDrive Tab ====
-        has_od = "onedrive" in methods and self.cloud_root
+        has_od = METHOD_ONEDRIVE in methods and self.cloud_root
         if has_od:
             game_cloud_dir = os.path.join(self.cloud_root, game_name)
-            od_backups = [d for d in os.listdir(game_cloud_dir) if d.startswith("save_")] if os.path.exists(game_cloud_dir) else []
-            od_backups.sort(reverse=True)
+            od_backups = self._list_onedrive_backups(game_name)
         else:
             od_backups = []
             game_cloud_dir = ""
@@ -1644,21 +1809,12 @@ class CloudBackupApp:
         frame_od = ttk.Frame(notebook)
         notebook.add(frame_od, text="OneDrive")
 
-        tree_od = self._build_history_tree(frame_od, game_cloud_dir, od_backups, "onedrive")
-        self._bind_history_menu(tree_od, hist_win, game_name, game_cloud_dir, "onedrive")
+        tree_od = self._build_history_tree(frame_od, game_cloud_dir, od_backups, METHOD_ONEDRIVE)
+        self._bind_history_menu(tree_od, hist_win, game_name, game_cloud_dir, METHOD_ONEDRIVE)
 
         # ==== WebDAV Tab ====
-        has_wd = "webdav" in methods and self.webdav_url
-        wd_backups = []
-        if has_wd:
-            wc = self.get_webdav_client()
-            if wc:
-                try:
-                    items = wc.propfind(game_name)
-                    wd_backups = [(n, h) for h, n in items if n.startswith("save_")]
-                    wd_backups.sort(key=lambda x: x[0], reverse=True)
-                except Exception:
-                    pass
+        has_wd = METHOD_WEBDAV in methods and self.webdav_url
+        wd_backups = self._list_webdav_backups(game_name) if has_wd else []
 
         frame_wd = ttk.Frame(notebook)
         notebook.add(frame_wd, text="WebDAV")
@@ -2038,7 +2194,7 @@ class CloudBackupApp:
                         "name": game["name"],
                         "save": game["save"],
                         "paused": game.get("paused", False),
-                        "backup_methods": game.get("backup_methods", ["onedrive"]),
+                        "backup_methods": game.get("backup_methods", [METHOD_ONEDRIVE]),
                         "max_backups": game.get("max_backups", self.default_max_backups)
                     }]
                     with open(file_path, "w", encoding="utf-8") as f:
@@ -2066,7 +2222,7 @@ class CloudBackupApp:
                     "name": game["name"],
                     "save": game["save"],
                     "paused": game.get("paused", False),
-                    "backup_methods": game.get("backup_methods", ["onedrive"]),
+                    "backup_methods": game.get("backup_methods", [METHOD_ONEDRIVE]),
                     "max_backups": game.get("max_backups", self.default_max_backups)
                 })
                 count += 1
@@ -2092,7 +2248,7 @@ class CloudBackupApp:
                         "name": g["name"],
                         "save": g["save"],
                         "paused": g.get("paused", False),
-                        "backup_methods": g.get("backup_methods", ["onedrive"])
+                        "backup_methods": g.get("backup_methods", [METHOD_ONEDRIVE])
                     } for g in self.games_config]
                 with open(file_path, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=4, ensure_ascii=False)
@@ -2116,11 +2272,18 @@ class CloudBackupApp:
                     if messagebox.askyesno("导入 WebDAV 配置", "配置文件中包含 WebDAV 设置，是否一同导入？"):
                         self.webdav_url = data.get("webdav_url", "")
                         self.webdav_username = data.get("webdav_username", "")
-                        self.webdav_password = data.get("webdav_password", "")
+                        # 导入文件可能携带明文密码（旧版本导出），转入加密存储而非保留明文
+                        imported_pw = data.get("webdav_password", "")
+                        self.webdav_password = imported_pw
+                        if imported_pw:
+                            if not secrets_store.save_password(_APP_DIR, imported_pw):
+                                self.log("⚠ 导入的 WebDAV 密码无法写入加密存储，仅本次会话有效。")
+                        else:
+                            secrets_store.clear_password(_APP_DIR)
                 if data.get("default_max_backups"):
                     self.default_max_backups = data.get("default_max_backups", DEFAULT_MAX_BACKUPS)
                 if data.get("default_download_source"):
-                    self.default_download_source = data.get("default_download_source", "ask")
+                    self.default_download_source = data.get("default_download_source", SOURCE_ASK)
             elif isinstance(data, list):
                 imported_games = data
             else:
@@ -2160,7 +2323,7 @@ class CloudBackupApp:
                         "name": name,
                         "save": save_dir,
                         "paused": ig.get("paused", False),
-                        "backup_methods": ig.get("backup_methods", ["onedrive"]),
+                        "backup_methods": ig.get("backup_methods", [METHOD_ONEDRIVE]),
                         "max_backups": ig.get("max_backups", self.default_max_backups)
                     })
                 imported_count += 1
@@ -2170,9 +2333,7 @@ class CloudBackupApp:
                 self.backup_config_to_cloud()
             self.update_cloud_status_label()
             self.refresh_list()
-            if self.is_monitoring:
-                self.stop_monitoring()
-                self.start_monitoring()
+            self._restart_monitoring_if_active()
             if fixed_paths:
                 self.log(f"📥 已自动适配 {fixed_paths} 个路径中的用户名，共导入 {imported_count} 个游戏配置。")
             else:
@@ -2183,74 +2344,81 @@ class CloudBackupApp:
 
     # ================= 从云端恢复配置 =================
     def restore_config_from_cloud(self):
-        """从云端配置备份文件中选择并恢复游戏配置（仅添加新游戏，不修改已有）"""
-        cloud_configs = self._list_cloud_configs()
-        if not cloud_configs:
-            return messagebox.showinfo("提示", "未在云端找到任何配置备份。\n请先在全局设置中开启\"自动保存游戏配置到云端\"。")
+        """从云端恢复游戏配置：弹窗先开，两个来源异步加载。"""
+        # 立即打开弹窗，各行显示“正在读取...”
+        self._show_config_restore_dialog_async()
 
-        # 弹出选择窗口
+    def _show_config_restore_dialog_async(self):
+        """弹窗先显示占位行，然后后台分别加载 OneDrive 和 WebDAV 最新配置。"""
         choice_win = tk.Toplevel(self.root)
-        choice_win.title("选择云端配置备份")
-        choice_win.geometry("520x380")
+        choice_win.title("从云端恢复配置")
+        choice_win.geometry("620x260")
         choice_win.resizable(False, False)
         choice_win.grab_set()
-        choice_win.configure(bg="#F5F6FA")
+        choice_win.configure(bg=COLOR_BG)
         center_window(choice_win)
         choice_win.result = None
 
         content = ttk.Frame(choice_win, padding=15)
         content.pack(fill="both", expand=True)
-        ttk.Label(content, text="请选择要恢复的云端配置备份：",
+        ttk.Label(content, text="请选择配置来源（每个来源只显示最新配置）：",
                  font=(self._font_family, 10, 'bold')).pack(anchor="w", pady=(0, 10))
 
-        # 构建列表
         list_frame = ttk.Frame(content)
         list_frame.pack(fill="both", expand=True)
 
-        tree = ttk.Treeview(list_frame, columns=("source", "date", "count"), show="headings",
-                           selectmode="browse", height=8)
-        tree.heading("source", text="来源")
-        tree.heading("date", text="备份时间")
-        tree.heading("count", text="游戏数量")
-        tree.column("source", width=80, anchor="center")
-        tree.column("date", width=280)
-        tree.column("count", width=80, anchor="center")
-        tree.pack(side="left", fill="both", expand=True)
+        listbox = tk.Listbox(list_frame, font=("Consolas", 10), bg="white",
+                            selectmode="browse", height=4, activestyle="none")
+        listbox.pack(side="left", fill="both", expand=True)
 
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
-        scrollbar.pack(side="right", fill="y")
-        tree.configure(yscrollcommand=scrollbar.set)
+        # 立即插入两行占位
+        listbox.insert("end", "  ☁ OneDrive │  正在读取…")
+        listbox.insert("end", "  🌐 WebDAV   │  正在读取…")
 
-        for source, fname, games in cloud_configs:
-            try:
-                ts_str = fname[7:]  # "config_" 之后
-                if ts_str.endswith(".json"):
-                    ts_str = ts_str[:-5]
-                dt = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
-                date_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                date_str = fname
-            tree.insert("", "end", values=(source, date_str, f"{len(games)} 个"), iid=fname)
+        # 最终数据槽：[(source, filename, games, status), ...]
+        ready_summaries = [None, None]  # index 0=OneDrive, 1=WebDAV
 
-        # 双击选择
+        def update_row(idx, summary):
+            """后台线程回调：更新一行 + 检查是否全部就绪"""
+            ready_summaries[idx] = summary
+            source, fname, games, status = summary
+            icon = "☁" if source == "OneDrive" else "🌐"
+            count = len(games) if isinstance(games, list) else 0
+            time_text = self._format_config_time(fname)
+            line = f"  {icon} {source:8s} │ {count:3d} 个游戏 │ {time_text:19s} │ {status}"
+            listbox.delete(idx)
+            listbox.insert(idx, line)
+
+        def load_source(idx, source_name):
+            """后台线程：加载单个来源的配置"""
+            summary = self._load_one_cloud_source(idx, source_name)
+            self.root.after(0, lambda: update_row(idx, summary))
+
+        threading.Thread(target=load_source, args=(0, "OneDrive"), daemon=True).start()
+        threading.Thread(target=load_source, args=(1, "WebDAV"), daemon=True).start()
+
         def on_select():
-            sel = tree.selection()
+            sel = listbox.curselection()
             if not sel:
+                messagebox.showinfo("提示", "请先选择一个配置来源。", parent=choice_win)
                 return
-            fname = sel[0]
-            for s, fn, gs in cloud_configs:
-                if fn == fname:
-                    choice_win.result = (s, fn, gs)
-                    break
+            idx = sel[0]
+            summary = ready_summaries[idx]
+            if summary is None:
+                return
+            source, fname, games, status = summary
+            if not isinstance(games, list) or not games:
+                messagebox.showinfo("不可恢复", f"{source} 当前没有可恢复的游戏配置。\n状态：{status}", parent=choice_win)
+                return
+            choice_win.result = (source, fname, games)
             choice_win.destroy()
 
-        tree.bind("<Double-1>", lambda e: on_select())
+        listbox.bind("<Double-Button-1>", lambda e: on_select())
 
-        # 按钮
         btn_frame = ttk.Frame(content)
-        btn_frame.pack(pady=(10, 0))
-        create_button(btn_frame, text="选择此备份", style='Success.TButton',
-                   command=on_select, width=120,
+        btn_frame.pack(pady=(12, 0))
+        create_button(btn_frame, text="恢复选中来源", style='Success.TButton',
+                   command=on_select, width=130,
                    pack_side="left", pack_padx=(0, 10))
         create_button(btn_frame, text="取消", style='Secondary.TButton',
                    command=choice_win.destroy, width=100,
@@ -2262,31 +2430,114 @@ class CloudBackupApp:
             return
 
         source_label, filename, cloud_games = result
+        self._merge_cloud_config_games(source_label, filename, cloud_games)
+
+    def _load_one_cloud_source(self, idx, source_name):
+        """后台线程：加载一个来源的最新配置，返回四元组 summary。"""
+        if source_name == "OneDrive":
+            if not self.cloud_root:
+                return ("OneDrive", "", [], "未配置")
+            cf_dir = os.path.join(self.cloud_root, "云存档配置备份")
+            if not os.path.isdir(cf_dir):
+                return ("OneDrive", "", [], "未找到配置")
+            try:
+                files = [fn for fn in os.listdir(cf_dir)
+                         if fn.startswith("config_") and fn.endswith(".json")]
+                files.sort(reverse=True)
+                if files:
+                    fn = files[0]
+                    with open(os.path.join(cf_dir, fn), "r", encoding="utf-8") as f:
+                        games = self._parse_config_games(json.load(f))
+                    status = "可恢复" if games else "配置为空"
+                    return ("OneDrive", fn, games, status)
+                return ("OneDrive", "", [], "未找到配置")
+            except Exception as e:
+                return ("OneDrive", "", [], f"读取失败: {e}")
+        else:
+            if not self.webdav_url:
+                return ("WebDAV", "", [], "未配置")
+            wc = self.get_webdav_client()
+            if not wc:
+                return ("WebDAV", "", [], "WebDAV 不可用")
+            try:
+                remote_dir = "云存档配置备份"
+                items = wc.propfind(remote_dir)
+                files = [n for _, n in items if n.startswith("config_") and n.endswith(".json")]
+                files.sort(reverse=True)
+                if files:
+                    import tempfile
+                    fn = files[0]
+                    tmpdir = tempfile.mkdtemp()
+                    try:
+                        tmp_fp = os.path.join(tmpdir, fn)
+                        if wc.get_file(f"{remote_dir}/{fn}", tmp_fp):
+                            with open(tmp_fp, "r", encoding="utf-8") as f:
+                                games = self._parse_config_games(json.load(f))
+                            status = "可恢复" if games else "配置为空"
+                            return ("WebDAV", fn, games, status)
+                        return ("WebDAV", fn, [], "下载失败")
+                    finally:
+                        rmtree_safe(tmpdir)
+                return ("WebDAV", "", [], "未找到配置")
+            except Exception as e:
+                return ("WebDAV", "", [], f"读取失败: {e}")
+
+    def _parse_config_games(self, data):
+        """兼容旧版 list 配置和新版 {'games': [...]} 配置。"""
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and isinstance(data.get("games"), list):
+            return data["games"]
+        return []
+
+    def _format_config_time(self, filename):
+        """把 config_YYYYmmdd_HHMMSS.json 转成可读时间；失败则返回文件名。"""
+        if not filename:
+            return "-"
+        try:
+            ts_str = filename[7:]
+            if ts_str.endswith(".json"):
+                ts_str = ts_str[:-5]
+            dt = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return filename
+
+    def _list_latest_cloud_config_sources(self):
+        """只读取每个来源最新的一份配置，返回两行摘要：[(source, filename, games, status), ...]。"""
+        summaries = []
+        od = self._load_one_cloud_source(0, "OneDrive")
+        wd = self._load_one_cloud_source(1, "WebDAV")
+        summaries.append(od)
+        summaries.append(wd)
+        return summaries
+
+    def _merge_cloud_config_games(self, source_label, filename, cloud_games):
+        """把选中来源的配置合并到本地：只添加新游戏，不修改已有游戏。"""
         local_names = set(self._get_game_names())
-        cloud_names = {g["name"] for g in cloud_games}
+        cloud_names = {g.get("name") for g in cloud_games if g.get("name")}
         new_names = cloud_names - local_names
         existing_names = cloud_names & local_names
 
         if not new_names:
             return messagebox.showinfo("无需下载",
-                f"云端配置 ({source_label}) 中未包含新游戏。\n\n"
+                f"{source_label} 最新配置中未包含新游戏。\n\n"
                 f"云端共 {len(cloud_games)} 个游戏，本地已有 {len(existing_names)} 个匹配。\n"
                 f"无需下载。")
 
-        new_games = [g for g in cloud_games if g["name"] in new_names]
-        existing = [g for g in cloud_games if g["name"] in existing_names]
+        new_games = [g for g in cloud_games if g.get("name") in new_names]
+        existing = [g for g in cloud_games if g.get("name") in existing_names]
 
-        # 显示对比
         diff = f"来源: {source_label}  —  {filename}\n\n"
         diff += f"📋 云端配置中共有 {len(cloud_games)} 个游戏\n\n"
         diff += f"🆕 将新增 {len(new_games)} 个游戏:\n"
         for g in new_games:
-            diff += f"   ➕ {g['name']}\n"
+            diff += f"   ➕ {g.get('name', '')}\n"
             diff += f"      存档: {g.get('save', '无')}\n"
         if existing:
             diff += f"\n✅ {len(existing)} 个已存在 (保持不变):\n"
             for g in existing[:5]:
-                diff += f"   ✓ {g['name']}\n"
+                diff += f"   ✓ {g.get('name', '')}\n"
             if len(existing) > 5:
                 diff += f"   ... 等共 {len(existing)} 个\n"
         diff += "\n⚠ 本次只添加新游戏，不会修改任何已有游戏配置。"
@@ -2294,16 +2545,15 @@ class CloudBackupApp:
         if not messagebox.askyesno("云端配置对比", diff):
             return
 
-        # 执行合并
         imported = 0
         for ng in new_games:
             with self._config_lock:
-                if not any(g["name"] == ng["name"] for g in self.games_config):
+                if not any(g["name"] == ng.get("name") for g in self.games_config):
                     self.games_config.append({
-                        "name": ng["name"],
+                        "name": ng.get("name"),
                         "save": fix_save_path(ng.get("save", "")),
                         "paused": ng.get("paused", False),
-                        "backup_methods": ng.get("backup_methods", ["onedrive"]),
+                        "backup_methods": ng.get("backup_methods", [METHOD_ONEDRIVE]),
                         "max_backups": ng.get("max_backups", self.default_max_backups)
                     })
                     imported += 1
@@ -2311,9 +2561,7 @@ class CloudBackupApp:
         if imported > 0:
             self.save_config()
             self.refresh_list()
-            if self.is_monitoring:
-                self.stop_monitoring()
-                self.start_monitoring()
+            self._restart_monitoring_if_active()
             self.log(f"☁ 从云端配置 ({source_label}) 导入 {imported} 个新游戏。")
             messagebox.showinfo("完成", f"已从云端配置导入 {imported} 个新游戏。")
 
@@ -2330,10 +2578,10 @@ class CloudBackupApp:
         else:
             self.log("💡 欢迎！列表为空，请先添加游戏或导入配置。")
 
-        # 启动时检测云端是否有更新的游戏配置
-        if self.auto_backup_config_to_cloud:
-            self.log("☁ 正在检查云端游戏配置...")
-            threading.Thread(target=self._check_cloud_config, daemon=True).start()
+        # 启动 3 秒后再检测云端游戏配置，避免拖慢启动体验
+        if self.cloud_root or self.webdav_url:
+            self.root.after(3000, lambda: threading.Thread(
+                target=self._check_cloud_config, daemon=True).start())
 
     def _auto_sync_all_games(self):
         """启动时检查所有游戏，本地较新则上传，云端较新则下载"""
@@ -2343,7 +2591,7 @@ class CloudBackupApp:
                 continue
             game_name = game["name"]
             save_dir = game["save"]
-            methods = game.get("backup_methods", ["onedrive"])
+            methods = game.get("backup_methods", [METHOD_ONEDRIVE])
             if not methods:
                 continue
             if not os.path.isdir(save_dir):
@@ -2359,7 +2607,7 @@ class CloudBackupApp:
             if source:
                 _, source_key, source_path = source
                 # 从目录名解析云端的 mtime
-                if source_key == "onedrive":
+                if source_key == METHOD_ONEDRIVE:
                     cloud_time = get_latest_mtime(source_path)
                 else:
                     # WebDAV: 从目录名提取 mtime
@@ -2370,12 +2618,12 @@ class CloudBackupApp:
                         pass
 
             # 本地较新 → 上传
-            if local_time - cloud_time > 3:
+            if local_time - cloud_time > SYNC_THRESHOLD_SECONDS:
                 self.log(f"📤 启动同步: {game_name} 本地较新，自动备份...")
                 self.worker.submit(lambda gn=game_name, sd=save_dir: self.perform_backup(gn, sd))
                 time.sleep(1)  # 错开多个游戏的备份时机
             # 云端较新 → 下载
-            elif cloud_time - local_time > 3 and source:
+            elif cloud_time - local_time > SYNC_THRESHOLD_SECONDS and source:
                 self.log(f"📥 启动同步: {game_name} 云端较新，自动下载...")
                 self.worker.submit(lambda gn=game_name, sd=save_dir, src=source: self._do_restore(gn, sd, src))
                 time.sleep(1)
@@ -2383,25 +2631,107 @@ class CloudBackupApp:
                 self.log(f"✅ 启动同步: {game_name} 已完全同步，跳过")
 
     def _check_cloud_config(self):
-        """后台线程：检测云端游戏配置文件，若有新游戏则提示用户下载"""
+        """后台线程：检测云端游戏配置文件，若有新游戏则启用"更新配置"按钮提醒用户"""
         local_names = set(self._get_game_names())
-        cloud_configs = self._list_cloud_configs()
+        summaries = self._list_latest_cloud_config_sources()
+        cloud_configs = [(source, fname, games) for source, fname, games, status in summaries
+                         if fname and isinstance(games, list)]
         if not cloud_configs:
-            self.log("☁ 云端暂无游戏配置备份，跳过检查（添加游戏后会自动备份）。")
+            self.log("☁ [配置检测] 云端暂无游戏配置备份，跳过检查。")
+            self.root.after(0, self._set_update_config_btn_state, False)
             return
 
-        # 取最新的云端备份
-        source_label, filename, cloud_games = cloud_configs[0]
+        # 按偏好选择云端配置来源
+        selected = self._select_cloud_config(cloud_configs)
+        if selected is None:
+            self.log("☁ [配置检测] 未找到可用的云端配置。")
+            self.root.after(0, self._set_update_config_btn_state, False)
+            return
+
+        source_label, filename, cloud_games = selected
         cloud_names = {g["name"] for g in cloud_games}
         new_names = cloud_names - local_names
 
+        self.log(f"☁ [配置检测] 云端 ({source_label}) 共 {len(cloud_games)} 个游戏，本地 {len(local_names)} 个。")
+
         if not new_names:
-            self.log(f"☁ 云端游戏配置 ({source_label}, {len(cloud_games)} 个游戏) 与本地一致，无需更新。")
+            # 如果有另一个源也检查一下（偏好源没有新游戏，但另一个源可能有）
+            alt_source = self._get_alt_cloud_config(cloud_configs, source_label)
+            if alt_source:
+                alt_label, alt_fn, alt_games = alt_source
+                alt_names = {g["name"] for g in alt_games}
+                alt_new = alt_names - local_names
+                if alt_new:
+                    alt_new_games = [g for g in alt_games if g["name"] in alt_new]
+                    self.log(f"☁ [配置检测] 偏好源 ({source_label}) 无新游戏，但 {alt_label} 有 {len(alt_new)} 个新游戏。")
+                    ngn = [g["name"] for g in alt_new_games]
+                    self.log(f"☁ [配置检测] 新游戏: {', '.join(ngn)}")
+                    self.log("📢 有新游戏，按「更新配置」按钮立刻更新")
+                    self._set_pending_cloud(alt_new_games, alt_label)
+                    self.root.after(0, self._set_update_config_btn_state, True)
+                    return
+            self.log(f"☁ [配置检测] 云端游戏配置与本地一致，无需更新。")
+            self.root.after(0, self._set_update_config_btn_state, False)
             return
 
         new_games = [g for g in cloud_games if g["name"] in new_names]
-        self.root.after(500, lambda: self._prompt_cloud_config_merge(
-            source_label, filename, cloud_games, new_games))
+        new_game_names = [g["name"] for g in new_games]
+        self.log(f"☁ [配置检测] 云端有 {len(new_games)} 个新游戏: {', '.join(new_game_names)}")
+        self.log("📢 有新游戏，按「更新配置」按钮立刻更新")
+
+        self._set_pending_cloud(new_games, source_label)
+        self.root.after(0, self._set_update_config_btn_state, True)
+
+    def _select_cloud_config(self, cloud_configs):
+        """根据偏好从配置列表中选择一个云端配置，返回 (source, filename, games) 或 None"""
+        od_configs = [c for c in cloud_configs if c[0] == "OneDrive"]
+        wd_configs = [c for c in cloud_configs if c[0] == "WebDAV"]
+        od_best = od_configs[0] if od_configs else None
+        wd_best = wd_configs[0] if wd_configs else None
+        pref = self.default_config_source
+
+        if pref == METHOD_ONEDRIVE:
+            if od_best:
+                self.log(f"☁ [配置检测] 按偏好使用 OneDrive 配置。")
+                return od_best
+            if wd_best:
+                self.log(f"☁ [配置检测] OneDrive 无配置，回退到 WebDAV。")
+                return wd_best
+        elif pref == METHOD_WEBDAV:
+            if wd_best:
+                self.log(f"☁ [配置检测] 按偏好使用 WebDAV 配置。")
+                return wd_best
+            if od_best:
+                self.log(f"☁ [配置检测] WebDAV 无配置，回退到 OneDrive。")
+                return od_best
+        else:
+            # "ask" 模式：取最新的（用户点按钮时可以切换源）
+            if od_best and wd_best:
+                # 两个源都有，取最新的
+                best = od_best if od_best[1] > wd_best[1] else wd_best
+                self.log(f"☁ [配置检测] 两个源均有配置，取最新 ({best[0]})，可按按钮后选择源。")
+                return best
+            return od_best or wd_best
+        return None
+
+    def _get_alt_cloud_config(self, cloud_configs, current_source):
+        """获取不同于当前源的最新云端配置"""
+        for source, fn, games in cloud_configs:
+            if source != current_source:
+                return (source, fn, games)
+        return None
+
+    def _set_update_config_btn_state(self, enabled):
+        """启用/禁用"更新配置"按钮"""
+        if self._btn_update_config:
+            try:
+                if enabled:
+                    self._btn_update_config.configure(state='normal')
+                else:
+                    self._btn_update_config.configure(state='disabled')
+                    self._clear_pending_cloud()
+            except Exception:
+                pass
 
     def _prompt_cloud_config_merge(self, source_label, filename, cloud_games, new_games):
         """主线程弹窗：提示用户合并云端游戏配置（仅添加新游戏）"""
@@ -2426,25 +2756,195 @@ class CloudBackupApp:
                             "name": ng["name"],
                             "save": fix_save_path(ng.get("save", "")),
                             "paused": ng.get("paused", False),
-                            "backup_methods": ng.get("backup_methods", ["onedrive"]),
+                            "backup_methods": ng.get("backup_methods", [METHOD_ONEDRIVE]),
                             "max_backups": ng.get("max_backups", self.default_max_backups)
                         })
                         imported += 1
             if imported > 0:
                 self.save_config()
                 self.refresh_list()
-                if self.is_monitoring:
-                    self.stop_monitoring()
-                    self.start_monitoring()
+                self._restart_monitoring_if_active()
                 self.log(f"☁ 从云端配置导入 {imported} 个新游戏。")
                 messagebox.showinfo("完成", f"已从云端配置导入 {imported} 个新游戏。")
 
+    def _apply_cloud_config_update(self):
+        """点击"更新配置"按钮：合并云端检测到的新游戏"""
+        new_games, source_label = self._get_pending_cloud()
+        if not new_games:
+            messagebox.showinfo("提示", "当前没有待同步的云端新游戏。")
+            return
+
+        local_names = set(self._get_game_names())
+
+        # "ask" 模式：两个源都有配置时弹窗询问用户选择哪个源
+        if self.default_config_source == SOURCE_ASK:
+            summaries = self._list_latest_cloud_config_sources()
+            cloud_configs = [(source, fname, games) for source, fname, games, status in summaries
+                             if fname and isinstance(games, list)]
+            sources_available = set(c[0] for c in cloud_configs)
+            if len(sources_available) > 1:
+                chosen = self._ask_config_download_source(cloud_configs)
+                if chosen is None:
+                    return  # 用户取消
+                chosen_source, chosen_fn, chosen_games = chosen
+                if chosen_source != source_label:
+                    source_label = chosen_source
+                    # 重新计算新游戏
+                    cloud_names = {g["name"] for g in chosen_games}
+                    new_names = cloud_names - local_names
+                    new_games = [g for g in chosen_games if g["name"] in new_names]
+                    if not new_games:
+                        messagebox.showinfo("提示", f"{chosen_source} 配置中没有新游戏。")
+                        return
+
+        # 再次过滤（可能用户在此期间手动添加了）
+        actual_new = [g for g in new_games if g["name"] not in local_names]
+        if not actual_new:
+            messagebox.showinfo("提示", "云端的新游戏已经全部在本地列表中了，无需更新。")
+            self._clear_pending_cloud()
+            self._set_update_config_btn_state(False)
+            return
+
+        existing = [g for g in new_games if g["name"] in local_names]
+
+        msg = f"☁ 云端 ({source_label}) 检测到新游戏配置\n\n"
+        msg += f"🆕 将新增 {len(actual_new)} 个游戏:\n"
+        for g in actual_new:
+            msg += f"   ➕ {g['name']}\n"
+        if existing:
+            msg += f"\n✅ {len(existing)} 个已存在 (保持不变)\n"
+        msg += "\n⚠ 只添加新游戏，不会修改已有配置。\n是否更新？"
+
+        if messagebox.askyesno("更新配置", msg):
+            imported = 0
+            for ng in actual_new:
+                with self._config_lock:
+                    if not any(g["name"] == ng["name"] for g in self.games_config):
+                        self.games_config.append({
+                            "name": ng["name"],
+                            "save": fix_save_path(ng.get("save", "")),
+                            "paused": ng.get("paused", False),
+                            "backup_methods": ng.get("backup_methods", [METHOD_ONEDRIVE]),
+                            "max_backups": ng.get("max_backups", self.default_max_backups)
+                        })
+                        imported += 1
+            if imported > 0:
+                self.save_config()
+                self.refresh_list()
+                self._restart_monitoring_if_active()
+                self.log(f"☁ 更新配置：从 {source_label} 导入 {imported} 个新游戏。")
+                messagebox.showinfo("完成", f"已从{source_label}配置导入 {imported} 个新游戏。")
+
+            # 清空待处理状态，按钮置灰
+            self._clear_pending_cloud()
+            self._set_update_config_btn_state(False)
+
+    def _ask_config_download_source(self, cloud_configs):
+        """弹出对话框询问用户从哪个源下载配置，返回选中的 (source, filename, games) 或 None"""
+        sources = []
+        for c in cloud_configs:
+            if c[0] not in [s[0] for s in sources]:
+                sources.append(c)
+
+        choice_win = tk.Toplevel(self.root)
+        choice_win.title("选择配置下载来源")
+        choice_win.geometry("380x220")
+        choice_win.resizable(False, False)
+        choice_win.grab_set()
+        choice_win.configure(bg=COLOR_BG)
+        center_window(choice_win)
+        choice_win.result = None
+
+        content = ttk.Frame(choice_win, padding=15)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, text="检测到多个云端配置来源，请选择：",
+                 font=(self._font_family, 10, 'bold')).pack(anchor="w", pady=(0, 15))
+
+        for source, fname, games in sources:
+            try:
+                ts_str = fname[7:]
+                if ts_str.endswith(".json"):
+                    ts_str = ts_str[:-5]
+                dt = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+                date_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                date_str = fname
+            source_name = "☁ OneDrive" if source == "OneDrive" else "🌐 WebDAV"
+            btn_text = f"{source_name}  —  {date_str}  —  {len(games)} 个游戏"
+
+            def make_cmd(s=source, fn=fname, gs=games):
+                return lambda: _choose(s, fn, gs)
+
+            create_button(content, text=btn_text, style='Secondary.TButton',
+                       command=make_cmd(), width=340,
+                       pack_side="top", pack_pady=3)
+
+        def _choose(s, fn, gs):
+            choice_win.result = (s, fn, gs)
+            choice_win.destroy()
+
+        create_button(content, text="取消", style='Secondary.TButton',
+                   command=choice_win.destroy, width=100,
+                   pack_side="bottom", pack_pady=(10, 0))
+
+        self.root.wait_window(choice_win)
+        return getattr(choice_win, 'result', None)
+
     # ---- 云端配置辅助 ----
-    def _list_cloud_configs(self):
-        """列出所有可用的云端配置备份，返回 [(source, filename, games_list), ...] 按时间倒序"""
+    def _list_cloud_configs_light(self):
+        """快速列出云端配置备份（不下载 WebDAV 内容），返回 [(source, filename, games_or_[], loaded), ...]"""
         results = []
 
-        # OneDrive
+        # OneDrive：本地读取，毫秒级
+        if self.cloud_root:
+            cf_dir = os.path.join(self.cloud_root, CLOUD_CONFIG_BACKUP_DIR)
+            if os.path.isdir(cf_dir):
+                for fn in os.listdir(cf_dir):
+                    if fn.startswith("config_") and fn.endswith(".json"):
+                        fp = os.path.join(cf_dir, fn)
+                        try:
+                            with open(fp, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                            if isinstance(data, list):
+                                games_list = data
+                            elif isinstance(data, dict) and "games" in data:
+                                games_list = data["games"]
+                            else:
+                                games_list = []
+                            results.append(("OneDrive", fn, games_list, True))
+                        except Exception:
+                            results.append(("OneDrive", fn, [], True))
+
+        # WebDAV：只 PROPFIND，不下载内容（避免卡 UI）
+        if self.webdav_url:
+            wc = self.get_webdav_client()
+            if wc:
+                try:
+                    items = wc.propfind(CLOUD_CONFIG_BACKUP_DIR)
+                    cf_files = [(n, h) for h, n in items if n.startswith("config_")]
+                    cf_files.sort(key=lambda x: x[0], reverse=True)
+                    self.log(f"☁ [配置列表] WebDAV PROPFIND 云存档配置备份: {len(items)} 项, config_文件: {len(cf_files)}")
+                    for name, _ in cf_files[:10]:
+                        results.append(("WebDAV", name, [], False))
+                except Exception as e:
+                    self.log(f"☁ [配置列表] WebDAV PROPFIND 异常: {e}")
+
+        # 按文件名排序（时间倒序）
+        results.sort(key=lambda x: x[1], reverse=True)
+        if results:
+            od_count = sum(1 for r in results if r[0] == "OneDrive")
+            wd_count = sum(1 for r in results if r[0] == "WebDAV")
+            self.log(f"☁ [配置列表] 发现 {len(results)} 个备份 (OneDrive: {od_count}, WebDAV: {wd_count})")
+        else:
+            self.log("☁ [配置列表] 未发现任何云端配置备份")
+        return results
+
+    def _list_cloud_configs(self):
+        """列出所有可用的云端配置备份并下载解析内容，返回 [(source, filename, games_list), ...] 按时间倒序
+        注意：此方法会下载 WebDAV 文件，需在后台线程调用避免卡 UI"""
+        results = []
+
+        # OneDrive：本地读取
         if self.cloud_root:
             cf_dir = os.path.join(self.cloud_root, "云存档配置备份")
             if os.path.isdir(cf_dir):
@@ -2454,11 +2954,17 @@ class CloudBackupApp:
                         try:
                             with open(fp, "r", encoding="utf-8") as f:
                                 data = json.load(f)
-                            results.append(("OneDrive", fn, data if isinstance(data, list) else []))
-                        except Exception:
-                            pass
+                            if isinstance(data, list):
+                                games_list = data
+                            elif isinstance(data, dict) and "games" in data:
+                                games_list = data["games"]
+                            else:
+                                games_list = []
+                            results.append(("OneDrive", fn, games_list))
+                        except Exception as e:
+                            self.debug_log(f"☁ [配置列表] 读取 OneDrive 配置 {fn} 失败: {e}")
 
-        # WebDAV
+        # WebDAV：PROPFIND + 逐个下载（较慢，仅后台调用）
         if self.webdav_url:
             wc = self.get_webdav_client()
             if wc:
@@ -2466,20 +2972,26 @@ class CloudBackupApp:
                     items = wc.propfind("云存档配置备份")
                     cf_files = [(n, h) for h, n in items if n.startswith("config_")]
                     cf_files.sort(key=lambda x: x[0], reverse=True)
-                    for name, _ in cf_files[:5]:  # 最多取5个避免过多请求
+                    for name, _ in cf_files[:WEBDAV_CONFIG_LIST_LIMIT]:
                         try:
                             import tempfile
                             tmpdir = tempfile.mkdtemp()
                             try:
                                 tmp_fp = os.path.join(tmpdir, name)
-                                if wc.get_file(f"云存档配置备份/{name}", tmp_fp):
+                                if wc.get_file(f"{CLOUD_CONFIG_BACKUP_DIR}/{name}", tmp_fp):
                                     with open(tmp_fp, "r", encoding="utf-8") as f:
                                         data = json.load(f)
-                                    results.append(("WebDAV", name, data if isinstance(data, list) else []))
+                                    if isinstance(data, list):
+                                        games_list = data
+                                    elif isinstance(data, dict) and "games" in data:
+                                        games_list = data["games"]
+                                    else:
+                                        games_list = []
+                                    results.append(("WebDAV", name, games_list))
                             finally:
                                 rmtree_safe(tmpdir)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            self.debug_log(f"☁ [配置列表] 下载 WebDAV 配置 {name} 失败: {e}")
                 except Exception:
                     pass
 
@@ -2490,11 +3002,15 @@ class CloudBackupApp:
     def _auto_test_webdav(self):
         """后台测试 WebDAV 连接并将结果输出到日志"""
         try:
-            wc = WebDAVClient(self.webdav_url, self.webdav_username, self.webdav_password)
+            with self._config_lock:
+                url = self.webdav_url
+                user = self.webdav_username
+                pwd = self.webdav_password
+            wc = WebDAVClient(url, user, pwd)
             if wc.test_connection():
-                self.log(f"☁ WebDAV 连接成功: {self.webdav_url}")
+                self.log(f"☁ WebDAV 连接成功: {url}")
             else:
-                self.log(f"☁ WebDAV 连接失败，请检查地址和账号密码: {self.webdav_url}")
+                self.log(f"☁ WebDAV 连接失败，请检查地址和账号密码: {url}")
         except Exception as e:
             self.log(f"☁ WebDAV 连接异常: {e}")
 
@@ -2502,6 +3018,15 @@ class CloudBackupApp:
         if self.is_monitoring:
             self.stop_monitoring()
         else:
+            self.start_monitoring()
+
+    def _restart_monitoring_if_active(self):
+        """若监控正在运行，则停止后立即重启，使配置变更（增删改游戏/备份方式/暂停）生效。
+
+        集中封装此前散落 9 处的 `if self.is_monitoring: stop; start` 模式。
+        """
+        if self.is_monitoring:
+            self.stop_monitoring()
             self.start_monitoring()
 
     def start_monitoring(self, icon=None, item=None):
@@ -2512,8 +3037,8 @@ class CloudBackupApp:
 
         # 检查是否有任何可用的备份目标
         with self._config_lock:
-            has_od = any("onedrive" in g.get("backup_methods", ["onedrive"]) for g in self.games_config)
-            has_wd = any("webdav" in g.get("backup_methods", []) for g in self.games_config)
+            has_od = any(METHOD_ONEDRIVE in g.get("backup_methods", [METHOD_ONEDRIVE]) for g in self.games_config)
+            has_wd = any(METHOD_WEBDAV in g.get("backup_methods", []) for g in self.games_config)
         if has_od and not self.cloud_root:
             self.log("❌ 有游戏启用了 OneDrive 备份但未设置云盘目录！")
             return
@@ -2535,8 +3060,8 @@ class CloudBackupApp:
             if not os.path.exists(game["save"]):
                 try:
                     os.makedirs(game["save"], exist_ok=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.log(f"⚠ {game['name']} 存档目录创建失败: {e}")
             handler = SaveHandler(game["name"], game["save"], self._monitor_backup, self.log)
             observer = Observer()
             try:
@@ -2548,7 +3073,7 @@ class CloudBackupApp:
                 self.log(f"⚠ {game['name']} 监控失败: {e}")
 
         self.is_monitoring = True
-        self.btn_toggle.configure(text="⏹ 停止监控", bg='#EF4444', fg='#FFFFFF')
+        self.btn_toggle.configure(text="⏹ 停止监控", bg=COLOR_DANGER, fg='#FFFFFF')
         self.tray_icon.icon = self.icon_active
         self.tray_icon.title = f"云存档管家 (监控中: {monitored_count} 个)"
         self.log(f"✅ 已启动，当前监控 {monitored_count} 个游戏。")
@@ -2562,7 +3087,7 @@ class CloudBackupApp:
             observer.join()
         self.observers = []
         self.is_monitoring = False
-        self.btn_toggle.configure(text="▶ 启动监控", bg='#10B981', fg='#FFFFFF')
+        self.btn_toggle.configure(text="▶ 启动监控", bg=COLOR_SUCCESS, fg='#FFFFFF')
         self.tray_icon.icon = self.icon_inactive
         self.tray_icon.title = "云存档管家 (未监控)"
         self.log("🛑 所有监控已暂停。")

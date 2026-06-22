@@ -6,7 +6,13 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['pystray._win32', 'pystray._util'],
+    # pystray: 托盘图标依赖；cryptography: secrets_store 的 Fernet 后备（Windows 主用 DPAPI）
+    hiddenimports=[
+        'pystray._win32', 'pystray._util',
+        'cryptography', 'cryptography.fernet',
+        'cryptography.hazmat.primitives.hashes',
+        'cryptography.hazmat.primitives.kdf.hkdf',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
