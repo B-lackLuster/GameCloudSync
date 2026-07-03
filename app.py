@@ -420,9 +420,31 @@ class CloudBackupApp:
         self.root.after(0, self.root.focus_force)
 
     def quit_app(self, icon=None, item=None):
-        self.stop_monitoring()
-        self.tray_icon.stop()
-        self.root.quit()
+        """退出程序：停监控 → 停 worker → 停托盘 → 退出主循环 → 销毁窗口。
+
+        每步都包异常保护，确保某步失败不会阻塞后续清理，避免关闭卡死。
+        """
+        # 1. 停止文件监控（observer.join 已加超时，不会无限阻塞）
+        try:
+            self.stop_monitoring()
+        except Exception:
+            pass
+        # 2. 停止后台工作线程（提交哨兵 None，让其 _run 退出）
+        try:
+            self.worker.shutdown()
+        except Exception:
+            pass
+        # 3. 停止托盘图标（让 pystray 线程的 run() 返回）
+        try:
+            self.tray_icon.stop()
+        except Exception:
+            pass
+        # 4. 退出 tkinter 主循环并销毁窗口（root.quit 只退 mainloop，需 destroy 释放资源）
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except Exception:
+            pass
 
     # ================= 工具函数 =================
     def browse_dir(self, entry_widget):
@@ -1708,7 +1730,10 @@ class CloudBackupApp:
         return getattr(choice_win, 'result', None)
 
     def _do_restore(self, game_name, save_dir, source):
-        """执行实际的恢复操作（在后台线程中运行，不做 GUI 更新）"""
+        """执行实际的恢复操作（在后台线程中运行，不做 GUI 更新）
+
+        注意：下载成功后需触发 UI 刷新，否则列表状态不会更新。
+        """
         source_label, source_key, source_path = source
         try:
             if source_key == METHOD_ONEDRIVE:
@@ -1735,6 +1760,8 @@ class CloudBackupApp:
                 apply_backup_mtime(source_path, save_dir)
                 self.log(f"🔄 🌐 WebDAV 下载完成: {file_count} 个文件")
             self.log(f"🔄 ✅ {game_name}: 从 {source_label} 恢复成功！")
+            # 下载完成后刷新列表，否则状态不会更新（perform_backup 已有此调用）
+            self.trigger_refresh_ui()
         except Exception as e:
             self.log(f"🔄 ❌ {game_name}: 恢复失败 ({e})")
 
@@ -3084,7 +3111,8 @@ class CloudBackupApp:
         for observer in self.observers:
             observer.stop()
         for observer in self.observers:
-            observer.join()
+            # join 加超时，避免 watchdog 线程卡住时导致主线程无限阻塞（关闭卡死）
+            observer.join(timeout=3)
         self.observers = []
         self.is_monitoring = False
         self.btn_toggle.configure(text="▶ 启动监控", bg=COLOR_SUCCESS, fg='#FFFFFF')
