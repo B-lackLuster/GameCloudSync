@@ -84,6 +84,9 @@ public sealed class BackupService
     {
         var backupPath = Path.Combine(config.CloudRoot, game.Name, backupName);
         FileUtil.DeleteDirectorySafe(game.Save);
+        // The game may never have been launched on this machine; create the
+        // full save path (including missing parents) before copying.
+        Directory.CreateDirectory(game.Save);
         await FileUtil.CopyDirectoryAsync(backupPath, game.Save, ct);
         log($"⇩ ✓ {game.Name}: 从 OneDrive 备份 [{backupName}] 恢复");
     }
@@ -109,6 +112,12 @@ public sealed class BackupService
                 $"WebDAV 下载失败：'{remoteDir}' 未获取到任何文件（检查目录是否存在、文件名编码是否匹配）");
         }
         FileUtil.DeleteDirectorySafe(game.Save);
+        // Directory.Move requires the destination's parent to exist. On a new
+        // machine the whole save path may be missing because the game was
+        // never launched, so create the parent chain explicitly.
+        var saveParent = Path.GetDirectoryName(game.Save);
+        if (!string.IsNullOrEmpty(saveParent))
+            Directory.CreateDirectory(saveParent);
         Directory.Move(tmpDir, game.Save);
         FileUtil.ApplyBackupMTime(backupName, game.Save);
         log($"⇩ ⚡ WebDAV 下载完成: {count} 个文件");

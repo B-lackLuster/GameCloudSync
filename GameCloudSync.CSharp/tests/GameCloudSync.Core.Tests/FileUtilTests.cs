@@ -21,6 +21,37 @@ public class FileUtilTests
     }
 
     [Fact]
+    public void GetLatestMTime_EmptyOrMissingDirectory_ReturnsZero()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"gcs_missing_{Guid.NewGuid():N}");
+        Assert.Equal(0, FileUtil.GetLatestMTime(missing));
+
+        var empty = Path.Combine(Path.GetTempPath(), $"gcs_empty_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(empty);
+        try
+        {
+            Assert.Equal(0, FileUtil.GetLatestMTime(empty));
+        }
+        finally
+        {
+            Directory.Delete(empty);
+        }
+
+        var withFile = Path.Combine(Path.GetTempPath(), $"gcs_file_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(withFile);
+        try
+        {
+            var f = Path.Combine(withFile, "save.dat");
+            File.WriteAllText(f, "x");
+            Assert.True(FileUtil.GetLatestMTime(withFile) > 0);
+        }
+        finally
+        {
+            Directory.Delete(withFile, true);
+        }
+    }
+
+    [Fact]
     public async Task CopyDirectoryAsync_PreservesFilesAndMTime()
     {
         var src = Path.Combine(Path.GetTempPath(), $"gcs_src_{Guid.NewGuid():N}");

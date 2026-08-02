@@ -29,17 +29,10 @@ public static partial class FileUtil
         {
             // ignore
         }
-        if (latest == 0)
-        {
-            try
-            {
-                latest = new DateTimeOffset(File.GetLastWriteTimeUtc(folder)).ToUnixTimeSeconds();
-            }
-            catch
-            {
-                // ignore
-            }
-        }
+        // NOTE: an empty directory must count as "no saves" (0). Falling back
+        // to the folder's own LastWriteTime made a freshly auto-created save
+        // directory look "modified right now", so a new game with no local
+        // save was reported as "local newer" instead of "cloud newer".
         return latest;
     }
 
