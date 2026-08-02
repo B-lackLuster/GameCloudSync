@@ -1,5 +1,7 @@
 # 🎮 全自动多游戏云存档管家 (GameCloudSync)
 
+> **新版（C# / WPF 重构版）已发布**：界面更现代、性能更好、无需安装 Python。源码与使用说明见 [GameCloudSync.CSharp/](GameCloudSync.CSharp/)，本目录为旧版 Python 实现。
+
 > 一个基于 Python tkinter 的 Windows 桌面应用，自动监控游戏存档目录，支持 **OneDrive** 和 **WebDAV** 双通道云同步，并提供系统托盘后台运行、开机自启、历史版本管理、配置云端备份恢复等完整功能。
 
 ---

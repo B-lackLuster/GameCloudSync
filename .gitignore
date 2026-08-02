@@ -30,3 +30,8 @@ wakeup.tmp
 # 系统
 Thumbs.db
 Desktop.ini
+
+# .NET / C# 重构版
+**/bin/
+**/obj/
+GameCloudSync.CSharp/publish/

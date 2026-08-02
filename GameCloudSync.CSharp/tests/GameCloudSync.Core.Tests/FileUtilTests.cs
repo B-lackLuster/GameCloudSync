@@ -1,0 +1,48 @@
+using GameCloudSync.Core.Util;
+
+namespace GameCloudSync.Core.Tests;
+
+public class FileUtilTests
+{
+    [Fact]
+    public void FixSavePath_ReplacesOldUser()
+    {
+        var fixedPath = FileUtil.FixSavePath(@"C:\Users\olduser\Documents\My Games\EldenRing");
+        var currentUser = Environment.GetEnvironmentVariable("USERNAME");
+        Assert.StartsWith($@"C:\Users\{currentUser}\", fixedPath);
+    }
+
+    [Fact]
+    public void FormatSize_HandlesUnits()
+    {
+        Assert.Equal("500 B", FileUtil.FormatSize(500));
+        Assert.Equal("1.50 KB", FileUtil.FormatSize(1536));
+        Assert.Equal("2.00 MB", FileUtil.FormatSize(2 * 1024 * 1024));
+    }
+
+    [Fact]
+    public async Task CopyDirectoryAsync_PreservesFilesAndMTime()
+    {
+        var src = Path.Combine(Path.GetTempPath(), $"gcs_src_{Guid.NewGuid():N}");
+        var dst = Path.Combine(Path.GetTempPath(), $"gcs_dst_{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(src, "sub"));
+            var file = Path.Combine(src, "sub", "save.dat");
+            await File.WriteAllTextAsync(file, "data");
+            var stamp = new DateTime(2020, 5, 12, 14, 30, 0, DateTimeKind.Utc);
+            File.SetLastWriteTimeUtc(file, stamp);
+
+            await FileUtil.CopyDirectoryAsync(src, dst);
+
+            var copied = Path.Combine(dst, "sub", "save.dat");
+            Assert.True(File.Exists(copied));
+            Assert.Equal(stamp, File.GetLastWriteTimeUtc(copied));
+        }
+        finally
+        {
+            Directory.Delete(src, true);
+            Directory.Delete(dst, true);
+        }
+    }
+}
