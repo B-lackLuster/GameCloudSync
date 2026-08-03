@@ -12,8 +12,10 @@ using GameCloudSync.App.Services;
 using GameCloudSync.App.ViewModels;
 using GameCloudSync.Core;
 using GameCloudSync.Core.Models;
+using GameCloudSync.Core.Services;
 using GameCloudSync.Core.Util;
 using Microsoft.Win32;
+using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App.Views;
 
@@ -64,7 +66,7 @@ public partial class MainWindow : Window
             return;
         e.Cancel = true;
         Hide();
-        _vm.AppendLog("面板已隐藏，程序在托盘继续运行...");
+        _vm.AppendLog(Localization.T("Main.HiddenToTray"));
     }
 
     public void ForceClose()
@@ -96,9 +98,9 @@ public partial class MainWindow : Window
             var game = _vm.SelectedGames[0].Game;
             foreach (var menuItem in menu.Items.OfType<MenuItem>())
             {
-                if ((string)menuItem.Header == "备份到 OneDrive")
+                if ((string)menuItem.Header == Localization.T("Menu.BackupToOneDrive"))
                     menuItem.IsChecked = game.HasMethod(Constants.MethodOneDrive);
-                else if ((string)menuItem.Header == "备份到 WebDAV")
+                else if ((string)menuItem.Header == Localization.T("Menu.BackupToWebDav"))
                     menuItem.IsChecked = game.HasMethod(Constants.MethodWebDav);
             }
         }
@@ -124,7 +126,7 @@ public partial class MainWindow : Window
         if (_vm.Config.AutoBackupConfigToCloud)
             _ = _vm.BackupConfigToCloudAsync();
         _vm.RestartMonitoringIfActive();
-        _vm.AppendLog($"＋ 已添加游戏「{game.Name}」，备份方式: {string.Join(", ", game.BackupMethods)}");
+        _vm.AppendLog(Localization.T("Msg.AddedGameLog", game.Name, string.Join(", ", game.BackupMethods)));
         if (_vm.Monitoring.IsMonitoring && Directory.Exists(game.Save) && Directory.EnumerateFileSystemEntries(game.Save).Any())
             _ = Task.Run(() => _vm.BackupService.PerformBackupAsync(game, _vm.Config, _vm.WebDavPassword, _vm.AppendLog));
         _ = _vm.RefreshGamesAsync();
@@ -162,11 +164,12 @@ public partial class MainWindow : Window
         var selected = _vm.SelectedGames.Where(g => Directory.Exists(g.Game.Save)).ToList();
         if (selected.Count == 0)
         {
-            MessageBox.Show(this, "请先选中需要上传的游戏。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Msg.SelectUploadGames"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         if (selected.Count > 1 &&
-            MessageBox.Show(this, $"确定为选中的 {selected.Count} 个游戏执行手动上传吗？", "批量上传",
+            MessageBox.Show(this, Localization.T("Msg.BatchUploadConfirm", selected.Count), Localization.T("Msg.BatchUploadTitle"),
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
         {
             return;
@@ -177,7 +180,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"上传失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, Localization.T("Msg.UploadFailed", ex.Message), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -186,7 +190,8 @@ public partial class MainWindow : Window
         var selected = _vm.SelectedGames.ToList();
         if (selected.Count == 0)
         {
-            MessageBox.Show(this, "请先选中需要下载覆盖的游戏。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Msg.SelectDownloadGames"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -203,12 +208,12 @@ public partial class MainWindow : Window
                     };
                     if (picker.ShowDialog() != true)
                         return;
-                    pref = picker.Result == "OneDrive 优先"
+                    pref = picker.Result == Localization.T("Pick.OneDriveFirst")
                         ? Constants.MethodOneDrive
                         : Constants.MethodWebDav;
                 }
-                if (MessageBox.Show(this, $"确定要用云端最新备份覆盖选中的 {selected.Count} 个游戏的本地存档吗？",
-                        "批量覆盖下载", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                if (MessageBox.Show(this, Localization.T("Msg.BatchDownloadConfirm", selected.Count),
+                        Localization.T("Msg.BatchDownloadTitle"), MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
                 {
                     return;
                 }
@@ -222,7 +227,7 @@ public partial class MainWindow : Window
                             item.Game, _vm.Config, _vm.WebDavPassword);
                         if (source is null)
                         {
-                            _vm.AppendLog($"⇩ ✗ {item.Name}: 未找到任何云端备份，跳过");
+                            _vm.AppendLog(Localization.T("Msg.SkipNoBackupLog", item.Name));
                             continue;
                         }
                         await _vm.RestoreFromSourceAsync(item, source);
@@ -239,7 +244,8 @@ public partial class MainWindow : Window
                 var sources = await _vm.CollectRestoreSourcesAsync(item);
                 if (sources.Count == 0)
                 {
-                    MessageBox.Show(this, "未找到任何云端备份！", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    MessageBox.Show(this, Localization.T("Msg.NoCloudBackup"), Localization.T("Common.Info"),
+                        MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
                 BackupSource? source;
@@ -266,14 +272,16 @@ public partial class MainWindow : Window
                     return;
 
                 var confirm = BuildRestoreConfirmMessage(item, source);
-                if (MessageBox.Show(this, confirm, "覆盖确认", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                if (MessageBox.Show(this, confirm, Localization.T("Msg.RestoreConfirmTitle"),
+                        MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
                     return;
                 await _vm.RestoreFromSourceAsync(item, source);
             }
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"恢复失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, Localization.T("Msg.RestoreFailed", ex.Message), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -295,16 +303,19 @@ public partial class MainWindow : Window
         }
         var localStr = localTs > 0
             ? DateTimeOffset.FromUnixTimeSeconds(localTs).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
-            : "无本地";
+            : Localization.T("Msg.RestoreNoLocal");
         var cloudStr = cloudTs > 0
             ? DateTimeOffset.FromUnixTimeSeconds(cloudTs).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
-            : "未知";
+            : Localization.T("Msg.RestoreUnknown");
         var headline = localTs == 0
-            ? "本地无存档。\n"
+            ? Localization.T("Msg.RestoreConfirmLocalEmpty")
             : cloudTs > localTs
-                ? "☁ 云端较新\n"
-                : "⚠ 本地较新或相同！\n";
-        return $"{headline}\n来源: {source.Label}\n[云端]: {cloudStr}\n[本地]: {localStr}\n\n确定覆盖？";
+                ? Localization.T("Msg.RestoreConfirmCloudNew")
+                : Localization.T("Msg.RestoreConfirmLocalNew");
+        return $"{headline}\n{Localization.T("Msg.RestoreSource", source.Label)}\n" +
+               $"{Localization.T("Msg.RestoreCloudTime", cloudStr)}\n" +
+               $"{Localization.T("Msg.RestoreLocalTime", localStr)}\n\n" +
+               Localization.T("Msg.RestoreAsk");
     }
 
     private void OnOpenLocalFolder(object sender, RoutedEventArgs e)
@@ -312,13 +323,14 @@ public partial class MainWindow : Window
         var item = _vm.SelectedGames.FirstOrDefault();
         if (item is null)
         {
-            MessageBox.Show(this, "请先选中一个游戏！", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Msg.SelectGameFirst"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         if (Directory.Exists(item.Game.Save))
             FileUtil.TryOpenInExplorer(item.Game.Save);
         else
-            MessageBox.Show(this, $"本地存档路径不存在：\n{item.Game.Save}\n\n可能尚未创建或已被删除。", "路径不存在",
+            MessageBox.Show(this, Localization.T("Msg.PathMissing", item.Game.Save), Localization.T("Msg.PathMissingTitle"),
                 MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
@@ -327,7 +339,8 @@ public partial class MainWindow : Window
         var item = _vm.SelectedGames.FirstOrDefault();
         if (item is null)
         {
-            MessageBox.Show(this, "请先选中一个游戏！", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Msg.SelectGameFirst"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         if (item.Game.HasMethod(Constants.MethodOneDrive) && !string.IsNullOrEmpty(_vm.Config.CloudRoot))
@@ -343,7 +356,8 @@ public partial class MainWindow : Window
         }
         else
         {
-            MessageBox.Show(this, "该游戏未配置可用的云端目录目标。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Msg.NoCloudTarget"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
         }
     }
 
@@ -357,7 +371,8 @@ public partial class MainWindow : Window
         {
             item.Game.Paused = newPaused;
             item.Refresh();
-            _vm.AppendLog($"⏸ 游戏「{item.Name}」已{(newPaused ? "暂停" : "恢复")}同步。");
+            _vm.AppendLog(Localization.T("Msg.PauseLog", item.Name,
+                Localization.T(newPaused ? "Msg.Paused" : "Msg.Resumed")));
         }
         _vm.ConfigStore.Save(_vm.Config);
         _vm.RestartMonitoringIfActive();
@@ -388,13 +403,13 @@ public partial class MainWindow : Window
         {
             if (method == Constants.MethodOneDrive && string.IsNullOrEmpty(_vm.Config.CloudRoot))
             {
-                MessageBox.Show(this, "OneDrive 云盘目录未设置，请先在全局设置中配置。", "提示",
+                MessageBox.Show(this, Localization.T("Add.OdNotConfigured"), Localization.T("Common.Info"),
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
             if (method == Constants.MethodWebDav && string.IsNullOrEmpty(_vm.Config.WebDavUrl))
             {
-                MessageBox.Show(this, "WebDAV 未配置，请先在全局设置中配置。", "提示",
+                MessageBox.Show(this, Localization.T("Add.WdNotConfigured"), Localization.T("Common.Info"),
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
@@ -405,7 +420,7 @@ public partial class MainWindow : Window
         item.Refresh();
         _vm.ConfigStore.Save(_vm.Config);
         _vm.RestartMonitoringIfActive();
-        _vm.AppendLog($"⚙ 游戏「{game.Name}」备份方式已更新: {string.Join(", ", game.BackupMethods)}");
+        _vm.AppendLog(Localization.T("Msg.MethodUpdatedLog", game.Name, string.Join(", ", game.BackupMethods)));
         _ = _vm.RefreshGamesAsync();
     }
 
@@ -414,7 +429,8 @@ public partial class MainWindow : Window
         var item = _vm.SelectedGames.FirstOrDefault();
         if (item is null)
         {
-            MessageBox.Show(this, "请先选中一个游戏！", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Msg.SelectGameFirst"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         var window = new HistoryWindow(_vm, item)
@@ -429,7 +445,8 @@ public partial class MainWindow : Window
         var item = _vm.SelectedGames.FirstOrDefault();
         if (item is null)
         {
-            MessageBox.Show(this, "请先选中一个游戏！", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Msg.SelectGameFirst"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         var dialog = new EditGameDialog(_vm, item.Game)
@@ -452,7 +469,7 @@ public partial class MainWindow : Window
         var selected = _vm.SelectedGames.ToList();
         if (selected.Count == 0)
             return;
-        if (MessageBox.Show(this, "确定删除所选游戏配置吗？", "确认", MessageBoxButton.YesNo,
+        if (MessageBox.Show(this, Localization.T("Msg.DeleteGamesConfirm"), Localization.T("Common.Confirm"), MessageBoxButton.YesNo,
                 MessageBoxImage.Question) != MessageBoxResult.Yes)
         {
             return;
@@ -473,13 +490,14 @@ public partial class MainWindow : Window
         var selected = _vm.SelectedGames.ToList();
         if (selected.Count == 0)
         {
-            MessageBox.Show(this, "请先选中要导出的游戏。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Msg.NoSelectionExport"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         var initial = selected.Count == 1
             ? $"GameCloudSync_{selected[0].Game.Name}.json"
             : "GameCloudSync_Selected.json";
-        var path = SaveJsonDialog(initial, "导出所选游戏配置");
+        var path = SaveJsonDialog(initial, Localization.T("Menu.ExportSelected"));
         if (path is null)
             return;
         var payload = selected.Select(g => new
@@ -491,18 +509,20 @@ public partial class MainWindow : Window
             g.Game.MaxBackups
         }).ToList();
         File.WriteAllText(path, JsonSerializer.Serialize(payload, ConfigJsonOptions), new UTF8Encoding(false));
-        _vm.AppendLog($"📤 已合并导出 {selected.Count} 个游戏配置到: {path}");
-        MessageBox.Show(this, $"已导出 {selected.Count} 个游戏配置。", "完成", MessageBoxButton.OK, MessageBoxImage.Information);
+        _vm.AppendLog(Localization.T("Msg.ExportSelectedLog", selected.Count, path));
+        MessageBox.Show(this, Localization.T("Msg.ExportSelectedDone", selected.Count), Localization.T("Common.Done"),
+            MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private void OnExportConfig(object sender, RoutedEventArgs e)
     {
         if (_vm.Config.Games.Count == 0)
         {
-            MessageBox.Show(this, "当前列表为空！", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, Localization.T("Msg.EmptyListExport"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        var path = SaveJsonDialog("GameCloudSync_Config.json", "导出配置文件");
+        var path = SaveJsonDialog("GameCloudSync_Config.json", Localization.T("Menu.ExportAll"));
         if (path is null)
             return;
         var payload = _vm.Config.Games.Select(g => new
@@ -514,8 +534,9 @@ public partial class MainWindow : Window
             g.MaxBackups
         }).ToList();
         File.WriteAllText(path, JsonSerializer.Serialize(payload, ConfigJsonOptions), new UTF8Encoding(false));
-        _vm.AppendLog($"📤 全部配置已导出至: {path}");
-        MessageBox.Show(this, "配置导出成功！", "成功", MessageBoxButton.OK, MessageBoxImage.Information);
+        _vm.AppendLog(Localization.T("Msg.ExportAllLog", path));
+        MessageBox.Show(this, Localization.T("Msg.ExportOk"), Localization.T("Common.Success"),
+            MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private async void OnImportConfig(object sender, RoutedEventArgs e)
@@ -523,7 +544,7 @@ public partial class MainWindow : Window
         var open = new OpenFileDialog
         {
             Filter = "JSON Config (*.json)|*.json",
-            Title = "选择要导入的配置文件"
+            Title = Localization.T("Msg.ImportPickTitle")
         };
         if (open.ShowDialog(this) != true)
             return;
@@ -540,7 +561,7 @@ public partial class MainWindow : Window
             {
                 if (obj["webdav_url"]?.GetValue<string>() is { Length: > 0 } url &&
                     string.IsNullOrEmpty(_vm.Config.WebDavUrl) &&
-                    MessageBox.Show(this, "配置文件中包含 WebDAV 设置，是否一同导入？", "导入 WebDAV 配置",
+                    MessageBox.Show(this, Localization.T("Msg.ImportWebDavAsk"), Localization.T("Msg.ImportWebDavTitle"),
                         MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
                 {
                     _vm.Config.WebDavUrl = url;
@@ -566,13 +587,15 @@ public partial class MainWindow : Window
             }
             else
             {
-                MessageBox.Show(this, "配置文件格式不正确！", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(this, Localization.T("Msg.ImportBadFormat"), Localization.T("Common.Error"),
+                    MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
             if (importedGames.Count == 0)
             {
-                MessageBox.Show(this, "配置文件中没有游戏。", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(this, Localization.T("Msg.ImportNoGames"), Localization.T("Common.Error"),
+                    MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
             foreach (var ig in importedGames)
@@ -581,14 +604,14 @@ public partial class MainWindow : Window
             // OneDrive root confirmation
             if (string.IsNullOrEmpty(_vm.Config.CloudRoot))
             {
-                var folder = PickFolder("选择 OneDrive 云盘总目录");
+                var folder = PickFolder(Localization.T("Msg.ImportPickCloudRoot"));
                 if (folder is not null)
                     _vm.Config.CloudRoot = folder;
             }
-            else if (MessageBox.Show(this, $"当前 OneDrive 云盘根目录为：\n{_vm.Config.CloudRoot}\n\n是否替换为新目录？",
-                         "更新云盘目录", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+            else if (MessageBox.Show(this, Localization.T("Msg.ImportCloudRootAsk", _vm.Config.CloudRoot),
+                         Localization.T("Msg.ImportCloudRootTitle"), MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
             {
-                var folder = PickFolder("选择新的 OneDrive 云盘总目录");
+                var folder = PickFolder(Localization.T("Msg.ImportPickNewCloudRoot"));
                 if (folder is not null)
                     _vm.Config.CloudRoot = folder;
             }
@@ -605,7 +628,7 @@ public partial class MainWindow : Window
                 ig.Save = fixedSave;
                 if (_vm.Config.Games.Any(g => g.Name == ig.Name))
                 {
-                    if (MessageBox.Show(this, $"游戏「{ig.Name}」已存在，是否覆盖？", "重复游戏",
+                    if (MessageBox.Show(this, Localization.T("Msg.ImportDuplicateAsk", ig.Name), Localization.T("Msg.ImportDuplicateTitle"),
                             MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
                     {
                         continue;
@@ -625,15 +648,17 @@ public partial class MainWindow : Window
                 await _vm.BackupConfigToCloudAsync();
             _vm.RestartMonitoringIfActive();
             if (fixedPaths > 0)
-                _vm.AppendLog($"📥 已自动适配 {fixedPaths} 个路径中的用户名，共导入 {importedCount} 个游戏配置。");
+                _vm.AppendLog(Localization.T("Msg.ImportFixedPaths", fixedPaths, importedCount));
             else
-                _vm.AppendLog($"📥 成功导入 {importedCount} 个游戏配置。");
-            MessageBox.Show(this, $"已导入 {importedCount} 个游戏。", "导入成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                _vm.AppendLog(Localization.T("Msg.ImportPlain", importedCount));
+            MessageBox.Show(this, Localization.T("Msg.ImportDone", importedCount), Localization.T("Msg.ImportDoneTitle"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             _ = _vm.RefreshGamesAsync();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"导入失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, Localization.T("Msg.ImportFailed", ex.Message), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -641,12 +666,14 @@ public partial class MainWindow : Window
     {
         if (!_vm.HasPendingCloudUpdate)
         {
-            MessageBox.Show(this, "当前没有待同步的云端新游戏。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Msg.UpdateNoPending"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         var count = await _vm.ApplyPendingCloudUpdateAsync();
         if (count > 0)
-            MessageBox.Show(this, $"已从云端配置导入 {count} 个新游戏。", "完成", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Msg.UpdateDone", count), Localization.T("Common.Done"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private async void OnRestoreConfigFromCloud(object sender, RoutedEventArgs e)
@@ -660,7 +687,7 @@ public partial class MainWindow : Window
         var (source, filename, games) = dialog.Result!.Value;
         if (games.Count == 0)
         {
-            MessageBox.Show(this, $"{source} 当前没有可恢复的游戏配置。", "不可恢复",
+            MessageBox.Show(this, Localization.T("Msg.NoGamesRestore", source), Localization.T("Common.Info"),
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -668,21 +695,20 @@ public partial class MainWindow : Window
         var newGames = games.Where(g => !localNames.Contains(g.Name)).ToList();
         if (newGames.Count == 0)
         {
-            MessageBox.Show(this, $"{source} 最新配置中没有新游戏。\n\n云端共 {games.Count} 个游戏，本地已全部匹配。", "无需下载",
+            MessageBox.Show(this, Localization.T("CfgRestore.NoNew", source, games.Count), Localization.T("Common.Info"),
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        var msg = $"来源: {source}   ←  {filename}\n\n" +
-                  $"☁ 云端配置中共有 {games.Count} 个游戏\n" +
-                  $"⇩ 将新增 {newGames.Count} 个游戏\n" +
+        var msg = Localization.T("CfgRestore.Header", source, filename, games.Count, newGames.Count) +
                   string.Concat(newGames.Select(g => $"    ＋ {g.Name}\n")) +
-                  $"\n✓ 本地已有 {games.Count - newGames.Count} 个匹配 (保持不变)\n\n" +
-                  "⚠ 本次只添加新游戏，不会修改任何已有游戏配置。\n是否下载？";
-        if (MessageBox.Show(this, msg, "云端配置对比", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                  Localization.T("CfgRestore.Existing", games.Count - newGames.Count);
+        if (MessageBox.Show(this, msg, Localization.T("CfgRestore.CompareTitle"),
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
         var imported = await _vm.MergeCloudConfigAsync(source, filename, games);
         if (imported > 0)
-            MessageBox.Show(this, $"已从云端配置导入 {imported} 个新游戏。", "完成", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("CfgRestore.Done", imported), Localization.T("Common.Done"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private async void OnBackupConfigToCloud(object sender, RoutedEventArgs e)

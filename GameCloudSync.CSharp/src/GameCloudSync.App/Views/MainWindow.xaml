@@ -2,38 +2,39 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:GameCloudSync.App.ViewModels"
-        Title="全自动多游戏云存档管家 (GameCloudSync)"
+        xmlns:loc="clr-namespace:GameCloudSync.Core.Services;assembly=GameCloudSync.Core"
+        Title="{Binding [Win.Title], Source={x:Static loc:Localization.Instance}}"
         Width="1180" Height="720" MinWidth="980" MinHeight="600"
         WindowStartupLocation="CenterScreen"
         Icon="/Assets/icon.ico">
     <Window.Resources>
         <ContextMenu x:Key="GameContextMenu">
-            <MenuItem Header="⇧ 手动上传" Click="OnForceBackup" />
-            <MenuItem Header="⇩ 覆盖下载" Click="OnRestore" />
+            <MenuItem Header="{Binding [Btn.Upload], Source={x:Static loc:Localization.Instance}}" Click="OnForceBackup" />
+            <MenuItem Header="{Binding [Btn.Download], Source={x:Static loc:Localization.Instance}}" Click="OnRestore" />
             <Separator />
-            <MenuItem Header="📂 打开本地存档位置" Click="OnOpenLocalFolder" />
-            <MenuItem Header="☁ 打开云端存档位置" Click="OnOpenCloudFolder" />
+            <MenuItem Header="{Binding [Menu.OpenLocalFolder], Source={x:Static loc:Localization.Instance}}" Click="OnOpenLocalFolder" />
+            <MenuItem Header="{Binding [Menu.OpenCloudFolder], Source={x:Static loc:Localization.Instance}}" Click="OnOpenCloudFolder" />
             <Separator />
-            <MenuItem Header="⏸ 暂停/恢复同步" Click="OnTogglePause" />
+            <MenuItem Header="{Binding [Menu.PauseSync], Source={x:Static loc:Localization.Instance}}" Click="OnTogglePause" />
             <Separator />
-            <MenuItem Header="备份到 OneDrive" IsCheckable="True" x:Name="MenuBackupOneDrive"
+            <MenuItem Header="{Binding [Menu.BackupToOneDrive], Source={x:Static loc:Localization.Instance}}" IsCheckable="True" x:Name="MenuBackupOneDrive"
                       Click="OnToggleOneDriveMethod" />
-            <MenuItem Header="备份到 WebDAV" IsCheckable="True" x:Name="MenuBackupWebDav"
+            <MenuItem Header="{Binding [Menu.BackupToWebDav], Source={x:Static loc:Localization.Instance}}" IsCheckable="True" x:Name="MenuBackupWebDav"
                       Click="OnToggleWebDavMethod" />
             <Separator />
-            <MenuItem Header="📜 查看历史备份" Click="OnShowHistory" />
+            <MenuItem Header="{Binding [Menu.History], Source={x:Static loc:Localization.Instance}}" Click="OnShowHistory" />
             <Separator />
-            <MenuItem Header="✎ 修改游戏配置" Click="OnEditGame" />
-            <MenuItem Header="📤 单独导出配置" Click="OnExportSelected" />
-            <MenuItem Header="🗑 删除" Click="OnDeleteGame" />
+            <MenuItem Header="{Binding [Menu.EditGame], Source={x:Static loc:Localization.Instance}}" Click="OnEditGame" />
+            <MenuItem Header="{Binding [Menu.ExportSelected], Source={x:Static loc:Localization.Instance}}" Click="OnExportSelected" />
+            <MenuItem Header="{Binding [Menu.DeleteGame], Source={x:Static loc:Localization.Instance}}" Click="OnDeleteGame" />
         </ContextMenu>
 
         <ContextMenu x:Key="MoreMenu">
-            <MenuItem Header="📤 导出全部配置" Click="OnExportConfig" />
-            <MenuItem Header="📥 批量导入配置" Click="OnImportConfig" />
+            <MenuItem Header="{Binding [Menu.ExportAll], Source={x:Static loc:Localization.Instance}}" Click="OnExportConfig" />
+            <MenuItem Header="{Binding [Menu.ImportBatch], Source={x:Static loc:Localization.Instance}}" Click="OnImportConfig" />
             <Separator />
-            <MenuItem Header="☆ 备份配置到云端" Click="OnBackupConfigToCloud" />
-            <MenuItem Header="☁ 从云端恢复配置" Click="OnRestoreConfigFromCloud" />
+            <MenuItem Header="{Binding [Menu.BackupConfigCloud], Source={x:Static loc:Localization.Instance}}" Click="OnBackupConfigToCloud" />
+            <MenuItem Header="{Binding [Menu.RestoreConfigCloud], Source={x:Static loc:Localization.Instance}}" Click="OnRestoreConfigFromCloud" />
         </ContextMenu>
 
         <DataTemplate x:Key="GameCardTemplate" DataType="{x:Type vm:GameItemViewModel}">
@@ -57,7 +58,7 @@
                                 Visibility="{Binding IsWebDav, Converter={x:Static vm:Converters.BoolToVisibility}}">
                             <TextBlock Text="WebDAV" FontSize="11" Foreground="{StaticResource PrimaryBrush}" />
                         </Border>
-                        <TextBlock Text="⏸ 已暂停" FontSize="11" Foreground="{StaticResource MutedBrush}"
+                        <TextBlock Text="{Binding [Main.GamePausedBadge], Source={x:Static loc:Localization.Instance}}" FontSize="11" Foreground="{StaticResource MutedBrush}"
                                    Visibility="{Binding IsPaused, Converter={x:Static vm:Converters.BoolToVisibility}}"
                                    VerticalAlignment="Center" />
                     </StackPanel>
@@ -99,7 +100,7 @@
             </Grid.ColumnDefinitions>
             <Image Grid.Column="0" Source="/Assets/icon.ico" Width="40" Height="40" Margin="0,0,12,0" />
             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                <TextBlock Text="全自动多游戏云存档管家" FontSize="19" FontWeight="Bold"
+                <TextBlock Text="{Binding [Win.HeaderTitle], Source={x:Static loc:Localization.Instance}}" FontSize="19" FontWeight="Bold"
                            Foreground="{StaticResource TextBrush}" />
                 <TextBlock Text="{Binding CloudStatusText}" FontSize="12" Margin="0,3,0,0"
                            Foreground="{Binding CloudStatusBrush}" TextTrimming="CharacterEllipsis" />
@@ -107,7 +108,8 @@
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                 <Button Content="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="16"
                         Style="{StaticResource SecondaryButton}" Padding="10,6"
-                        ToolTip="全局设置" Click="OnSettings" Margin="0,0,10,0" />
+                        ToolTip="{Binding [Btn.Settings], Source={x:Static loc:Localization.Instance}}"
+                        Click="OnSettings" Margin="0,0,10,0" />
                 <Border Background="{Binding MonitorStateBrush}" CornerRadius="10" Padding="12,4"
                         VerticalAlignment="Center">
                     <TextBlock Text="{Binding MonitorStateText}" FontSize="12" FontWeight="SemiBold"
@@ -123,7 +125,8 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="13"
                                    VerticalAlignment="Center" />
-                        <TextBlock Text="添加游戏" Margin="6,0,0,0" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding [Btn.AddGame], Source={x:Static loc:Localization.Instance}}"
+                                   Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource AccentButton}" Click="OnToggleMonitoring" Margin="0,0,8,0">
@@ -148,7 +151,8 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xE898;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                    VerticalAlignment="Center" />
-                        <TextBlock Text="手动上传" Margin="6,0,0,0" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding [Btn.Upload], Source={x:Static loc:Localization.Instance}}"
+                                   Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource SecondaryButton}" Click="OnRestore"
@@ -156,14 +160,16 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                    VerticalAlignment="Center" />
-                        <TextBlock Text="覆盖下载" Margin="6,0,0,0" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding [Btn.Download], Source={x:Static loc:Localization.Instance}}"
+                                   Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource SecondaryButton}" Click="OnRefresh">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                    VerticalAlignment="Center" />
-                        <TextBlock Text="刷新" Margin="6,0,0,0" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding [Btn.Refresh], Source={x:Static loc:Localization.Instance}}"
+                                   Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
             </StackPanel>
@@ -177,7 +183,8 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                    VerticalAlignment="Center" />
-                        <TextBlock Text="更多" Margin="6,0,0,0" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding [Btn.More], Source={x:Static loc:Localization.Instance}}"
+                                   Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
             </StackPanel>
@@ -191,7 +198,7 @@
                      SelectionMode="Extended"
                      SelectionChanged="OnSelectionChanged"
                      PreviewMouseRightButtonDown="OnListRightClick" />
-            <TextBlock Text="尚未添加游戏，点击左上角「＋ 添加游戏」开始"
+            <TextBlock Text="{Binding [Main.EmptyList], Source={x:Static loc:Localization.Instance}}"
                        HorizontalAlignment="Center" VerticalAlignment="Center"
                        FontSize="14" Foreground="{StaticResource MutedBrush}">
                 <TextBlock.Style>
@@ -215,9 +222,9 @@
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
                 <Grid Grid.Row="0" Margin="12,8,12,4">
-                    <TextBlock Text="运行日志" FontSize="12" FontWeight="SemiBold"
+                    <TextBlock Text="{Binding [Main.LogTitle], Source={x:Static loc:Localization.Instance}}" FontSize="12" FontWeight="SemiBold"
                                Foreground="{StaticResource LogFgBrush}" />
-                    <Button Content="清空" FontSize="11" HorizontalAlignment="Right" Padding="8,2"
+                    <Button Content="{Binding [Btn.ClearLog], Source={x:Static loc:Localization.Instance}}" FontSize="11" HorizontalAlignment="Right" Padding="8,2"
                             Background="#334155" Foreground="{StaticResource LogFgBrush}"
                             BorderThickness="0" Cursor="Hand" Click="OnClearLog" />
                 </Grid>

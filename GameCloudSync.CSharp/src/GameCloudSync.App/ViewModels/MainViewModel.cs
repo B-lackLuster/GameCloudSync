@@ -6,6 +6,7 @@ using System.Windows.Media;
 using GameCloudSync.Core.Models;
 using GameCloudSync.Core.Services;
 using GameCloudSync.Core.Util;
+using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App.ViewModels;
 
@@ -52,6 +53,14 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged(nameof(MonitorStateText));
         });
         _monitoring.BackupFinished += () => RunOnUi(() => _ = RefreshGamesAsync());
+        Localization.Instance.LanguageChanged += () => RunOnUi(() =>
+        {
+            OnPropertyChanged(nameof(CloudStatusText));
+            OnPropertyChanged(nameof(MonitorButtonText));
+            OnPropertyChanged(nameof(MonitorStateText));
+            OnPropertyChanged(nameof(UpdateConfigButtonText));
+            _ = RefreshGamesAsync();
+        });
     }
 
     public AppConfig Config => _config;
@@ -88,8 +97,8 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public string UpdateConfigButtonText => HasPendingCloudUpdate
-        ? $"⬆ 更新配置 ({_pendingCloudGames.Count} 个新游戏)"
-        : "⬆ 更新配置";
+        ? Localization.T("Main.UpdateConfigN", _pendingCloudGames.Count)
+        : Localization.T("Main.UpdateConfig");
 
     public bool IsMonitoring
     {
@@ -101,19 +110,25 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    public string MonitorButtonText => IsMonitoring ? "停止监控" : "启动监控";
+    public string MonitorButtonText => IsMonitoring
+        ? Localization.T("Btn.StopMonitor")
+        : Localization.T("Btn.StartMonitor");
 
     public string MonitorStateText => IsMonitoring
-        ? $"● 监控中 ({_monitoredCount} 个游戏)"
-        : "○ 未监控";
+        ? Localization.T("Main.MonitorStateOn", _monitoredCount)
+        : Localization.T("Main.MonitorStateOff");
 
     public string CloudStatusText
     {
         get
         {
             var parts = new List<string>();
-            parts.Add(string.IsNullOrEmpty(_config.CloudRoot) ? "OneDrive: 未设置" : $"OneDrive: {_config.CloudRoot}");
-            parts.Add(string.IsNullOrEmpty(_config.WebDavUrl) ? "WebDAV: 未设置" : $"WebDAV: {_config.WebDavUrl}");
+            parts.Add(string.IsNullOrEmpty(_config.CloudRoot)
+                ? Localization.T("Cloud.OdUnset")
+                : Localization.T("Cloud.OdSet", _config.CloudRoot));
+            parts.Add(string.IsNullOrEmpty(_config.WebDavUrl)
+                ? Localization.T("Cloud.WdUnset")
+                : Localization.T("Cloud.WdSet", _config.WebDavUrl));
             return string.Join("  |  ", parts);
         }
     }
@@ -142,7 +157,7 @@ public sealed class MainViewModel : ObservableObject
     {
         foreach (var game in _config.Games)
             Games.Add(new GameItemViewModel(game));
-        AppendLog($"欢迎！共 {Games.Count} 个受监控游戏。");
+        AppendLog(Localization.T("Log.Welcome", Games.Count));
         if (_config.WebDavUrl.Length > 0)
             _ = Task.Run(TestWebDavAsync);
     }
@@ -151,14 +166,14 @@ public sealed class MainViewModel : ObservableObject
     {
         if (_config.Games.Count == 0)
         {
-            AppendLog("💡 欢迎！列表为空，请先添加游戏或导入配置。");
+            AppendLog(Localization.T("Log.EmptyList"));
             return;
         }
         if (!IsMonitoring)
             _monitoring.Start();
         if (_config.AutoSyncOnStartup)
         {
-            AppendLog("🔄 正在检查各游戏存档同步状态...");
+            AppendLog(Localization.T("Log.CheckingSync"));
             _ = Task.Run(AutoSyncAllGamesAsync);
         }
         if (!string.IsNullOrEmpty(_config.CloudRoot) || !string.IsNullOrEmpty(_config.WebDavUrl))
@@ -193,13 +208,13 @@ public sealed class MainViewModel : ObservableObject
         {
             using var wc = CreateWebDavClient();
             if (await wc.TestConnectionAsync())
-                AppendLog($"☆ WebDAV 连接成功: {_config.WebDavUrl}");
+                AppendLog(Localization.T("Log.WebDavOk", _config.WebDavUrl));
             else
-                AppendLog($"☆ WebDAV 连接失败，请检查地址和账号密码: {_config.WebDavUrl}");
+                AppendLog(Localization.T("Log.WebDavFail", _config.WebDavUrl));
         }
         catch (Exception ex)
         {
-            AppendLog($"☆ WebDAV 连接异常: {ex.Message}");
+            AppendLog(Localization.T("Log.WebDavError", ex.Message));
         }
     }
 
@@ -306,7 +321,7 @@ public sealed class MainViewModel : ObservableObject
         foreach (var name in names)
         {
             var (ts, _) = BackupName.Parse(name);
-            var dateText = BackupName.ToDateTime(ts)?.ToString("yyyy-MM-dd HH:mm:ss") ?? "未知时间";
+            var dateText = BackupName.ToDateTime(ts)?.ToString("yyyy-MM-dd HH:mm:ss") ?? Localization.T("Common.UnknownTime");
             var dir = Path.Combine(_config.CloudRoot, item.Game.Name, name);
             result.Add(new BackupEntry(name, "", dateText, FileUtil.GetFolderSize(dir)));
         }
@@ -322,7 +337,7 @@ public sealed class MainViewModel : ObservableObject
     {
         var dir = Path.Combine(_config.CloudRoot, item.Game.Name, backupName);
         FileUtil.DeleteDirectorySafe(dir);
-        AppendLog($"🗑 {item.Name}: 已删除备份 {backupName}");
+        AppendLog(Localization.T("Msg.DeleteBackupLog", item.Name, backupName));
         return Task.CompletedTask;
     }
 
@@ -330,14 +345,14 @@ public sealed class MainViewModel : ObservableObject
     {
         using var wc = CreateWebDavClient();
         await wc.DeletePathAsync($"{item.Game.Name}/{backupName}");
-        AppendLog($"🗑 {item.Name}: 已删除 WebDAV 备份 {backupName}");
+        AppendLog(Localization.T("Msg.DeleteBackupLog", item.Name, backupName));
     }
 
     public Task DeleteAllOneDriveBackupsAsync(GameItemViewModel item)
     {
         var dir = Path.Combine(_config.CloudRoot, item.Game.Name);
         FileUtil.DeleteDirectorySafe(dir);
-        AppendLog($"🗑 {item.Name}: 已清空所有 OneDrive 云端备份");
+        AppendLog(Localization.T("Msg.DeleteAllBackupsLog", item.Name));
         return Task.CompletedTask;
     }
 
@@ -355,7 +370,7 @@ public sealed class MainViewModel : ObservableObject
         var dest = Path.Combine(destDir, backupName);
         FileUtil.DeleteDirectorySafe(dest);
         var count = await wc.DownloadDirAsync($"{item.Game.Name}/{backupName}", dest);
-        AppendLog($"⇩ {item.Name}: 已下载 WebDAV 备份 {backupName} ({count} 个文件)");
+        AppendLog(Localization.T("Msg.DownloadWebDavLog", item.Name, backupName, count));
     }
 
     // ---------------- Config updates ----------------
@@ -389,7 +404,7 @@ public sealed class MainViewModel : ObservableObject
             .ToList();
         if (cloudConfigs.Count == 0)
         {
-            AppendLog("☆ [配置检测] 云端暂无游戏配置备份，跳过检查。");
+            AppendLog(Localization.T("Log.CfgDetectNone"));
             HasPendingCloudUpdate = false;
             return;
         }
@@ -397,7 +412,7 @@ public sealed class MainViewModel : ObservableObject
         var selected = SelectCloudConfig(cloudConfigs);
         if (selected is null)
         {
-            AppendLog("☆ [配置检测] 未找到可用的云端配置。");
+            AppendLog(Localization.T("Log.CfgDetectUnavailable"));
             HasPendingCloudUpdate = false;
             return;
         }
@@ -405,7 +420,7 @@ public sealed class MainViewModel : ObservableObject
         var (source, _, games) = selected.Value;
         var cloudNames = games.Select(g => g.Name).ToHashSet();
         var newNames = cloudNames.Except(localNames).ToList();
-        AppendLog($"☆ [配置检测] 云端 ({source}) 共 {games.Count} 个游戏，本地 {localNames.Count} 个。");
+        AppendLog(Localization.T("Log.CfgDetectSummary", source, games.Count, localNames.Count));
 
         if (newNames.Count == 0)
         {
@@ -417,12 +432,12 @@ public sealed class MainViewModel : ObservableObject
                     _pendingCloudGames = alt.Games.Where(g => altNew.Contains(g.Name)).ToList();
                     _pendingCloudSource = alt.Source;
                     HasPendingCloudUpdate = true;
-                    AppendLog($"☆ [配置检测] 偏好源 ({source}) 无新游戏，但 {alt.Source} 有 {altNew.Count} 个新游戏。");
-                    AppendLog("📥 有新游戏，按「更新配置」按钮立即更新");
+                    AppendLog(Localization.T("Log.CfgDetectAlt", source, alt.Source, altNew.Count));
+                    AppendLog(Localization.T("Log.CfgDetectUpdateBtn"));
                     return;
                 }
             }
-            AppendLog("☆ [配置检测] 云端游戏配置与本地一致，无需更新。");
+            AppendLog(Localization.T("Log.CfgDetectSynced"));
             HasPendingCloudUpdate = false;
             return;
         }
@@ -430,8 +445,8 @@ public sealed class MainViewModel : ObservableObject
         _pendingCloudGames = games.Where(g => newNames.Contains(g.Name)).ToList();
         _pendingCloudSource = source;
         HasPendingCloudUpdate = true;
-        AppendLog($"☆ [配置检测] 云端有 {_pendingCloudGames.Count} 个新游戏: {string.Join(", ", newNames)}");
-        AppendLog("📥 有新游戏，按「更新配置」按钮立即更新");
+        AppendLog(Localization.T("Log.CfgDetectNew", _pendingCloudGames.Count, string.Join(", ", newNames)));
+        AppendLog(Localization.T("Log.CfgDetectUpdateBtn"));
     }
 
     public async Task<int> ApplyPendingCloudUpdateAsync()
@@ -454,7 +469,7 @@ public sealed class MainViewModel : ObservableObject
         {
             _configStore.Save(_config);
             _monitoring.RestartIfActive();
-            AppendLog($"☆ 更新配置：从 {_pendingCloudSource} 导入 {imported} 个新游戏。");
+            AppendLog(Localization.T("Log.CfgUpdated", _pendingCloudSource, imported));
         }
         _pendingCloudGames = new List<GameConfig>();
         _pendingCloudSource = "";
@@ -481,7 +496,7 @@ public sealed class MainViewModel : ObservableObject
         {
             _configStore.Save(_config);
             _monitoring.RestartIfActive();
-            AppendLog($"☆ 从云端配置 ({sourceLabel}) 导入 {imported} 个新游戏。");
+            AppendLog(Localization.T("Log.CfgMerged", sourceLabel, imported));
         }
         await RefreshGamesAsync();
         return imported;
@@ -531,13 +546,13 @@ public sealed class MainViewModel : ObservableObject
             }
             if (localTime - cloudTime > Constants.SyncThresholdSeconds)
             {
-                AppendLog($"📤 启动同步: {game.Name} 本地较新，自动备份..");
+                AppendLog(Localization.T("Log.AutoSyncUpload", game.Name));
                 await _backupService.PerformBackupAsync(game, _config, _webDavPassword, AppendLog);
                 await Task.Delay(1000);
             }
             else if (cloudTime - localTime > Constants.SyncThresholdSeconds && source is not null)
             {
-                AppendLog($"📥 启动同步: {game.Name} 云端较新，自动下载..");
+                AppendLog(Localization.T("Log.AutoSyncDownload", game.Name));
                 if (source.Method == Constants.MethodOneDrive)
                     await _backupService.RestoreFromOneDriveAsync(game, Path.GetFileName(source.Path), _config, AppendLog);
                 else
@@ -546,7 +561,7 @@ public sealed class MainViewModel : ObservableObject
             }
             else
             {
-                AppendLog($"✓ 启动同步: {game.Name} 已完全同步，跳过");
+                AppendLog(Localization.T("Log.AutoSyncSynced", game.Name));
             }
         }
         RunOnUi(() => _ = RefreshGamesAsync());

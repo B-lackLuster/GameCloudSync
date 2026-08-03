@@ -39,7 +39,7 @@ public sealed class BackupService
             }
             catch (Exception ex)
             {
-                log($"[{DateTime.Now:HH:mm:ss}] ✗ {game.Name}: OneDrive 备份失败 ({ex.Message})");
+                log($"[{DateTime.Now:HH:mm:ss}] {Localization.T("Log.BackupFailed", game.Name, "OneDrive", ex.Message)}");
             }
         }
 
@@ -59,17 +59,17 @@ public sealed class BackupService
                 }
                 else
                 {
-                    log($"[{DateTime.Now:HH:mm:ss}] ✗ {game.Name}: WebDAV 备份上传失败");
+                    log($"[{DateTime.Now:HH:mm:ss}] {Localization.T("Log.WebDavUploadFailed", game.Name)}");
                 }
             }
             catch (Exception ex)
             {
-                log($"[{DateTime.Now:HH:mm:ss}] ✗ {game.Name}: WebDAV 备份失败 ({ex.Message})");
+                log($"[{DateTime.Now:HH:mm:ss}] {Localization.T("Log.BackupFailed", game.Name, "WebDAV", ex.Message)}");
             }
         }
 
         if (success.Count > 0)
-            log($"[{DateTime.Now:HH:mm:ss}] ✓ {game.Name}: 自动备份成功 ({string.Join(", ", success)})");
+            log($"[{DateTime.Now:HH:mm:ss}] {Localization.T("Log.BackupSucceeded", game.Name, string.Join(", ", success))}");
         return success;
     }
 
@@ -88,7 +88,7 @@ public sealed class BackupService
         // full save path (including missing parents) before copying.
         Directory.CreateDirectory(game.Save);
         await FileUtil.CopyDirectoryAsync(backupPath, game.Save, ct);
-        log($"⇩ ✓ {game.Name}: 从 OneDrive 备份 [{backupName}] 恢复");
+        log(Localization.T("Log.RestoreOdDone", game.Name, backupName));
     }
 
     public async Task RestoreFromWebDavAsync(
@@ -101,7 +101,7 @@ public sealed class BackupService
     {
         using var wc = _webDavFactory(config.WebDavUrl, webDavPassword);
         var remoteDir = $"{game.Name}/{backupName}";
-        log($"⇩ ⚡ WebDAV 下载: {remoteDir} ...");
+        log(Localization.T("Log.RestoreWdStart", remoteDir));
         var tmpDir = game.Save + ".tmp";
         FileUtil.DeleteDirectorySafe(tmpDir);
         var count = await wc.DownloadDirAsync(remoteDir, tmpDir, ct);
@@ -109,7 +109,7 @@ public sealed class BackupService
         {
             FileUtil.DeleteDirectorySafe(tmpDir);
             throw new InvalidOperationException(
-                $"WebDAV 下载失败：'{remoteDir}' 未获取到任何文件（检查目录是否存在、文件名编码是否匹配）");
+                Localization.T("Log.RestoreWdEmpty", remoteDir));
         }
         FileUtil.DeleteDirectorySafe(game.Save);
         // Directory.Move requires the destination's parent to exist. On a new
@@ -120,8 +120,8 @@ public sealed class BackupService
             Directory.CreateDirectory(saveParent);
         Directory.Move(tmpDir, game.Save);
         FileUtil.ApplyBackupMTime(backupName, game.Save);
-        log($"⇩ ⚡ WebDAV 下载完成: {count} 个文件");
-        log($"⇩ ✓ {game.Name}: 从 WebDAV 备份 [{backupName}] 恢复");
+        log(Localization.T("Log.RestoreWdDone", count));
+        log(Localization.T("Log.RestoreWdDoneFull", game.Name, backupName));
     }
 
     // ---------------- Listing ----------------
@@ -174,7 +174,7 @@ public sealed class BackupService
                 if (!name.StartsWith("save_", StringComparison.Ordinal))
                     continue;
                 var (ts, _) = BackupName.Parse(name);
-                var dateText = BackupName.ToDateTime(ts)?.ToString("yyyy-MM-dd HH:mm:ss") ?? "未知时间";
+                var dateText = BackupName.ToDateTime(ts)?.ToString("yyyy-MM-dd HH:mm:ss") ?? Localization.T("Common.UnknownTime");
                 result.Add(new BackupEntry(name, href, dateText, 0));
             }
             result.Sort((a, b) => string.CompareOrdinal(b.Name, a.Name));
@@ -196,14 +196,14 @@ public sealed class BackupService
         CancellationToken ct = default)
     {
         if (game.Paused)
-            return new SyncStatus("⏸ 已暂停", SyncStatusKind.Paused);
+            return new SyncStatus(Localization.T("Status.Paused"), SyncStatusKind.Paused);
         if (game.BackupMethods.Count == 0)
-            return new SyncStatus("未设置备份方式", SyncStatusKind.None);
+            return new SyncStatus(Localization.T("Status.NoMethods"), SyncStatusKind.None);
 
         var hasOneDrive = game.HasMethod(Constants.MethodOneDrive) && !string.IsNullOrEmpty(config.CloudRoot);
         var hasWebDav = game.HasMethod(Constants.MethodWebDav) && !string.IsNullOrEmpty(config.WebDavUrl);
         if (!hasOneDrive && !hasWebDav)
-            return new SyncStatus("备份目标未配置", SyncStatusKind.None);
+            return new SyncStatus(Localization.T("Status.NoTarget"), SyncStatusKind.None);
 
         var localTime = FileUtil.GetLatestMTime(game.Save);
         long odCloudTime = 0;
@@ -238,7 +238,7 @@ public sealed class BackupService
         }
 
         if (hasWebDav && !checkWebDav && odCloudTime == 0)
-            return new SyncStatus("WebDAV 未检查（点刷新）", SyncStatusKind.None);
+            return new SyncStatus(Localization.T("Status.WebDavUnchecked"), SyncStatusKind.None);
 
         long cloudTime;
         if (odCloudTime > 0)
@@ -249,17 +249,17 @@ public sealed class BackupService
             cloudTime = wdDirTs;
 
         if (localTime == 0 && cloudTime == 0)
-            return new SyncStatus("无存档记录", SyncStatusKind.None);
+            return new SyncStatus(Localization.T("Status.NoSaves"), SyncStatusKind.None);
         if (cloudTime == 0)
-            return new SyncStatus("等待首次备份...", SyncStatusKind.LocalNew);
+            return new SyncStatus(Localization.T("Status.WaitingFirst"), SyncStatusKind.LocalNew);
         if (localTime == 0)
-            return new SyncStatus("☁ 本地无档 (可下载)", SyncStatusKind.CloudNew);
+            return new SyncStatus(Localization.T("Status.LocalEmpty"), SyncStatusKind.CloudNew);
         if (localTime - cloudTime > Constants.SyncThresholdSeconds)
-            return new SyncStatus("⚠ 本地较新 (未备份)", SyncStatusKind.LocalNew);
+            return new SyncStatus(Localization.T("Status.LocalNew"), SyncStatusKind.LocalNew);
         if ((odCloudTime > 0 || wdBackupMTime > 0) &&
             cloudTime - localTime > Constants.SyncThresholdSeconds)
-            return new SyncStatus("☁ 云端较新 (请下载)", SyncStatusKind.CloudNew);
-        return new SyncStatus("✓ 已完全同步", SyncStatusKind.Synced);
+            return new SyncStatus(Localization.T("Status.CloudNew"), SyncStatusKind.CloudNew);
+        return new SyncStatus(Localization.T("Status.Synced"), SyncStatusKind.Synced);
     }
 
     public async Task<BackupSource?> FindLatestSourceAsync(

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using GameCloudSync.Core.Services;
 
 namespace GameCloudSync.Core.Models;
 
@@ -6,6 +7,8 @@ public sealed class AppConfig
 {
     public string CloudRoot { get; set; } = "";
     public bool Autostart { get; set; }
+    [JsonPropertyName("language")]
+    public string Language { get; set; } = Localization.Chinese;
     [JsonPropertyName("webdav_url")]
     public string WebDavUrl { get; set; } = "";
     [JsonPropertyName("webdav_username")]

@@ -91,6 +91,7 @@ public sealed class ConfigStore
 
     private static void EnsureDefaults(AppConfig config)
     {
+        config.Language = string.IsNullOrEmpty(config.Language) ? Localization.Chinese : config.Language;
         config.WebDavUrl ??= "";
         config.WebDavUsername ??= "";
         config.DefaultDownloadSource = string.IsNullOrEmpty(config.DefaultDownloadSource)

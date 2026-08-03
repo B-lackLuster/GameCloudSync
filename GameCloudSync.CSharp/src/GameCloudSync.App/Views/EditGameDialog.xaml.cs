@@ -2,8 +2,9 @@ using System.Windows;
 using GameCloudSync.App.ViewModels;
 using GameCloudSync.Core;
 using GameCloudSync.Core.Models;
-using GameCloudSync.Core.Util;
+using GameCloudSync.Core.Services;
 using Microsoft.Win32;
+using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App.Views;
 
@@ -25,7 +26,7 @@ public partial class EditGameDialog : Window
 
     private void OnBrowse(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog { Title = "选择本地存档目录" };
+        var dialog = new OpenFolderDialog { Title = Localization.T("Set.PickFolder") };
         if (dialog.ShowDialog(this) == true)
             SaveBox.Text = dialog.FolderName;
     }
@@ -36,7 +37,8 @@ public partial class EditGameDialog : Window
         var save = SaveBox.Text.Trim();
         if (name.Length == 0 || save.Length == 0)
         {
-            MessageBox.Show(this, "请填写完整！", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, Localization.T("Edit.FillRequired"), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         var methods = new List<string>();
@@ -46,12 +48,14 @@ public partial class EditGameDialog : Window
             methods.Add(Constants.MethodWebDav);
         if (methods.Count == 0)
         {
-            MessageBox.Show(this, "请至少选择一种备份方式！", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, Localization.T("Add.NoMethod"), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         if (!int.TryParse(MaxBox.Text, out var max) || max < 1 || max > 99)
         {
-            MessageBox.Show(this, "备份保留数需为 1-99 之间的整数。", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, Localization.T("Edit.InvalidMax"), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         _game.Name = name;

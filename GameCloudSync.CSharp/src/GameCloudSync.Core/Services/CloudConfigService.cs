@@ -64,14 +64,14 @@ public sealed class CloudConfigService
                     }
                     catch (Exception ex)
                     {
-                        log($"⚠ [配置备份] 清理 OneDrive 旧备份失败 {old}: {ex.Message}");
+                        log(Localization.T("Log.CfgOneDriveCleanFail", old, ex.Message));
                     }
                 }
                 okTargets.Add("OneDrive");
             }
             catch (Exception ex)
             {
-                log($"⚠ [配置备份] 写入 OneDrive 失败: {ex.Message}");
+                log(Localization.T("Log.CfgOneDriveWriteFail", ex.Message));
             }
         }
 
@@ -89,7 +89,7 @@ public sealed class CloudConfigService
                     await File.WriteAllTextAsync(tmpFile, json, ct);
                     if (!await wc.MkColAsync(Constants.CloudConfigBackupDir, ct))
                     {
-                        log($"⚠ [配置备份] WebDAV 创建目录失败: {Constants.CloudConfigBackupDir}");
+                        log(Localization.T("Log.CfgWebDavMkcolFail", Constants.CloudConfigBackupDir));
                     }
                     else if (await wc.PutFileAsync(tmpFile, $"{Constants.CloudConfigBackupDir}/{backupName}", ct))
                     {
@@ -106,14 +106,14 @@ public sealed class CloudConfigService
                             }
                             catch (Exception ex)
                             {
-                                log($"⚠ [配置备份] 清理 WebDAV 旧备份失败 {oldName}: {ex.Message}");
+                                log(Localization.T("Log.CfgWebDavCleanFail", oldName, ex.Message));
                             }
                         }
                         okTargets.Add("WebDAV");
                     }
                     else
                     {
-                        log($"⚠ [配置备份] WebDAV 上传失败: {backupName}");
+                        log(Localization.T("Log.CfgWebDavUploadFail", backupName));
                     }
                 }
                 finally
@@ -123,12 +123,12 @@ public sealed class CloudConfigService
             }
             catch (Exception ex)
             {
-                log($"⚠ [配置备份] WebDAV 备份异常: {ex.Message}");
+                log(Localization.T("Log.CfgWebDavError", ex.Message));
             }
         }
 
         if (okTargets.Count > 0)
-            log($"☆ 游戏配置已备份到: {string.Join(", ", okTargets)}");
+            log(Localization.T("Log.CfgBackedUp", string.Join(", ", okTargets)));
         return okTargets;
     }
 
@@ -145,10 +145,10 @@ public sealed class CloudConfigService
     private async Task<CloudConfigSummary> LoadOneDriveLatestAsync(AppConfig config, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(config.CloudRoot))
-            return new CloudConfigSummary("OneDrive", "", Array.Empty<GameConfig>(), "未配置");
+            return new CloudConfigSummary("OneDrive", "", Array.Empty<GameConfig>(), Localization.T("Common.NotConfigured"));
         var cfDir = Path.Combine(config.CloudRoot, Constants.CloudConfigBackupDir);
         if (!Directory.Exists(cfDir))
-            return new CloudConfigSummary("OneDrive", "", Array.Empty<GameConfig>(), "未找到配置");
+            return new CloudConfigSummary("OneDrive", "", Array.Empty<GameConfig>(), Localization.T("Common.NoConfigFound"));
         try
         {
             var files = Directory.EnumerateFiles(cfDir, "config_*.json")
@@ -157,22 +157,22 @@ public sealed class CloudConfigService
                 .OrderByDescending(f => f)
                 .ToList();
             if (files.Count == 0)
-                return new CloudConfigSummary("OneDrive", "", Array.Empty<GameConfig>(), "未找到配置");
+                return new CloudConfigSummary("OneDrive", "", Array.Empty<GameConfig>(), Localization.T("Common.NoConfigFound"));
             var fn = files[0]!;
             var games = ParseConfigGames(await File.ReadAllTextAsync(Path.Combine(cfDir, fn), ct));
-            var status = games.Count > 0 ? "可恢复" : "配置为空";
+            var status = games.Count > 0 ? Localization.T("Common.Restorable") : Localization.T("Common.ConfigEmpty");
             return new CloudConfigSummary("OneDrive", fn, games, status);
         }
         catch (Exception ex)
         {
-            return new CloudConfigSummary("OneDrive", "", Array.Empty<GameConfig>(), $"读取失败: {ex.Message}");
+            return new CloudConfigSummary("OneDrive", "", Array.Empty<GameConfig>(), Localization.T("Common.ReadFailed", ex.Message));
         }
     }
 
     private async Task<CloudConfigSummary> LoadWebDavLatestAsync(AppConfig config, string webDavPassword, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(config.WebDavUrl))
-            return new CloudConfigSummary("WebDAV", "", Array.Empty<GameConfig>(), "未配置");
+            return new CloudConfigSummary("WebDAV", "", Array.Empty<GameConfig>(), Localization.T("Common.NotConfigured"));
         try
         {
             using var wc = _webDavFactory(config.WebDavUrl, webDavPassword);
@@ -182,7 +182,7 @@ public sealed class CloudConfigService
                 .OrderByDescending(n => n)
                 .ToList();
             if (files.Count == 0)
-                return new CloudConfigSummary("WebDAV", "", Array.Empty<GameConfig>(), "未找到配置");
+                return new CloudConfigSummary("WebDAV", "", Array.Empty<GameConfig>(), Localization.T("Common.NoConfigFound"));
             var fn = files[0];
             var tmpDir = Path.Combine(Path.GetTempPath(), $"gcs_{Guid.NewGuid():N}");
             Directory.CreateDirectory(tmpDir);
@@ -190,9 +190,9 @@ public sealed class CloudConfigService
             {
                 var tmpFile = Path.Combine(tmpDir, fn);
                 if (!await wc.GetFileAsync($"{Constants.CloudConfigBackupDir}/{fn}", tmpFile, ct))
-                    return new CloudConfigSummary("WebDAV", fn, Array.Empty<GameConfig>(), "下载失败");
+                    return new CloudConfigSummary("WebDAV", fn, Array.Empty<GameConfig>(), Localization.T("Common.DownloadFailed"));
                 var games = ParseConfigGames(await File.ReadAllTextAsync(tmpFile, ct));
-                var status = games.Count > 0 ? "可恢复" : "配置为空";
+                var status = games.Count > 0 ? Localization.T("Common.Restorable") : Localization.T("Common.ConfigEmpty");
                 return new CloudConfigSummary("WebDAV", fn, games, status);
             }
             finally
@@ -202,7 +202,7 @@ public sealed class CloudConfigService
         }
         catch (Exception ex)
         {
-            return new CloudConfigSummary("WebDAV", "", Array.Empty<GameConfig>(), $"读取失败: {ex.Message}");
+            return new CloudConfigSummary("WebDAV", "", Array.Empty<GameConfig>(), Localization.T("Common.ReadFailed", ex.Message));
         }
     }
 

@@ -82,7 +82,7 @@ public sealed class MonitoringService : IDisposable
                     }
                     catch (Exception ex)
                     {
-                        _log($"⚠ {game.Name} 存档目录创建失败: {ex.Message}");
+                        _log(Localization.T("Log.MonitorDirCreateFail", game.Name, ex.Message));
                         continue;
                     }
                 }
@@ -92,7 +92,7 @@ public sealed class MonitoringService : IDisposable
             }
         }
         StateChanged?.Invoke();
-        _log($"✓ 已启动，当前监控 {_watchers.Count} 个游戏。");
+        _log(Localization.T("Log.MonitorStarted", _watchers.Count));
         return _watchers.Count > 0;
     }
 
@@ -107,7 +107,7 @@ public sealed class MonitoringService : IDisposable
         foreach (var watcher in watchers)
             watcher.Dispose();
         StateChanged?.Invoke();
-        _log("⏹ 所有监控已暂停。");
+        _log(Localization.T("Log.MonitorStopped"));
     }
 
     public void RestartIfActive()
@@ -136,7 +136,7 @@ public sealed class MonitoringService : IDisposable
             }
             catch (Exception ex)
             {
-                _log($"后台任务异常: {ex.Message}");
+                _log(Localization.T("Log.TaskError", ex.Message));
             }
             finally
             {
@@ -215,7 +215,7 @@ public sealed class MonitoringService : IDisposable
             }
             catch (Exception ex)
             {
-                _log($"⚠ {_game.Name} 监控失败: {ex.Message}");
+                _log(Localization.T("Log.MonitorGameFail", _game.Name, ex.Message));
                 return false;
             }
         }

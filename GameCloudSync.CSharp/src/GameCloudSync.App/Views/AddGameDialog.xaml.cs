@@ -1,7 +1,9 @@
 using System.Windows;
 using GameCloudSync.Core;
 using GameCloudSync.Core.Models;
+using GameCloudSync.Core.Services;
 using Microsoft.Win32;
+using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App.Views;
 
@@ -34,22 +36,22 @@ public partial class AddGameDialog : Window
         }
         else if (string.IsNullOrEmpty(_config.CloudRoot) && string.IsNullOrEmpty(_config.WebDavUrl))
         {
-            hint = "提示：请先在「全局设置」中配置 OneDrive 或 WebDAV";
+            hint = Localization.T("Add.HintNone");
         }
         else if (string.IsNullOrEmpty(_config.CloudRoot))
         {
-            hint = "提示：OneDrive 未配置，请先在全局设置中配置";
+            hint = Localization.T("Add.HintNoOd");
         }
         else
         {
-            hint = "提示：WebDAV 未配置，请先在全局设置中配置";
+            hint = Localization.T("Add.HintNoWd");
         }
         HintText.Text = hint;
     }
 
     private void OnBrowse(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog { Title = "选择本地存档目录" };
+        var dialog = new OpenFolderDialog { Title = Localization.T("Set.PickFolder") };
         if (dialog.ShowDialog(this) == true)
             SaveBox.Text = dialog.FolderName;
     }
@@ -60,7 +62,8 @@ public partial class AddGameDialog : Window
         var save = SaveBox.Text.Trim();
         if (name.Length == 0 || save.Length == 0)
         {
-            MessageBox.Show(this, "请填写游戏名称和本地存档路径。", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, Localization.T("Add.FillRequired"), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         var methods = new List<string>();
@@ -68,7 +71,7 @@ public partial class AddGameDialog : Window
         {
             if (string.IsNullOrEmpty(_config.CloudRoot))
             {
-                MessageBox.Show(this, "OneDrive 云盘目录未设置，请先在全局设置中配置。", "提示",
+                MessageBox.Show(this, Localization.T("Add.OdNotConfigured"), Localization.T("Common.Info"),
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
@@ -78,7 +81,7 @@ public partial class AddGameDialog : Window
         {
             if (string.IsNullOrEmpty(_config.WebDavUrl))
             {
-                MessageBox.Show(this, "WebDAV 未配置，请先在全局设置中配置。", "提示",
+                MessageBox.Show(this, Localization.T("Add.WdNotConfigured"), Localization.T("Common.Info"),
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
@@ -86,7 +89,8 @@ public partial class AddGameDialog : Window
         }
         if (methods.Count == 0)
         {
-            MessageBox.Show(this, "请至少选择一种备份方式！", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, Localization.T("Add.NoMethod"), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         Result = new GameConfig

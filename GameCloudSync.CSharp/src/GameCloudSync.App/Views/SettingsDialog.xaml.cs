@@ -4,13 +4,18 @@ using GameCloudSync.App.ViewModels;
 using GameCloudSync.Core;
 using GameCloudSync.Core.Services;
 using Microsoft.Win32;
+using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App.Views;
 
 public partial class SettingsDialog : Window
 {
     private readonly MainViewModel _vm;
-    private readonly string[] _sourceLabels = { "OneDrive 优先", "WebDAV 优先", "每次询问我" };
+    private readonly string[] _sourceLabels = {
+        Localization.T("Pick.OneDriveFirst"),
+        Localization.T("Pick.WebDavFirst"),
+        Localization.T("Set.AskEveryTime")
+    };
     private readonly string[] _sourceKeys = { Constants.MethodOneDrive, Constants.MethodWebDav, Constants.SourceAsk };
 
     public SettingsDialog(MainViewModel vm)
@@ -34,11 +39,14 @@ public partial class SettingsDialog : Window
         AutoSyncCheck.IsChecked = vm.Config.AutoSyncOnStartup;
         AutoConfigCheck.IsChecked = vm.Config.AutoBackupConfigToCloud;
         DebugCheck.IsChecked = vm.Config.DebugWebDavLog;
+
+        LanguageBox.ItemsSource = new[] { "中文", "English" };
+        LanguageBox.SelectedIndex = Localization.Instance.Language == Localization.English ? 1 : 0;
     }
 
     private void OnBrowseCloudRoot(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog { Title = "选择 OneDrive 云盘根目录" };
+        var dialog = new OpenFolderDialog { Title = Localization.T("Set.PickOneDrive") };
         if (dialog.ShowDialog(this) == true)
             CloudRootBox.Text = dialog.FolderName;
     }
@@ -48,23 +56,23 @@ public partial class SettingsDialog : Window
         var url = UrlBox.Text.Trim();
         if (url.Length == 0)
         {
-            TestResult.Text = "请先输入服务器地址";
+            TestResult.Text = Localization.T("Set.TestNeedUrl");
             return;
         }
         TestButton.IsEnabled = false;
-        TestResult.Text = "测试中...";
+        TestResult.Text = Localization.T("Set.Testing");
         try
         {
             using var wc = new WebDavClient(url, UserBox.Text.Trim(), PassBox.Password);
             var ok = await wc.TestConnectionAsync();
-            TestResult.Text = ok ? "✓ 连接成功" : "✗ 连接失败，请检查地址和账号密码";
+            TestResult.Text = ok ? Localization.T("Set.TestOk") : Localization.T("Set.TestFail");
             TestResult.Foreground = ok
                 ? (System.Windows.Media.Brush)FindResource("SuccessBrush")
                 : (System.Windows.Media.Brush)FindResource("DangerBrush");
         }
         catch (Exception ex)
         {
-            TestResult.Text = $"✗ 连接失败: {ex.Message}";
+            TestResult.Text = Localization.T("Set.TestError", ex.Message);
             TestResult.Foreground = (System.Windows.Media.Brush)FindResource("DangerBrush");
         }
         finally
@@ -81,7 +89,8 @@ public partial class SettingsDialog : Window
         var newPass = PassBox.Password;
         if (!int.TryParse(MaxBox.Text, out var max) || max < 1 || max > 99)
         {
-            MessageBox.Show(this, "默认备份数量需为 1-99 之间的整数。", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, Localization.T("Edit.InvalidMax"), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -96,7 +105,7 @@ public partial class SettingsDialog : Window
             if (newUrl.Length > 0 && newUser.Length > 0 && newPass.Length > 0)
             {
                 if (!_vm.SecretStore.SavePassword(newPass))
-                    _vm.AppendLog("⚠ WebDAV 密码无法写入系统加密存储，将仅保存在内存（重启后丢失）。");
+                    _vm.AppendLog(Localization.T("Set.PasswordStoreFailed"));
             }
             else
             {
@@ -113,23 +122,32 @@ public partial class SettingsDialog : Window
         _vm.Config.AutoBackupConfigToCloud = AutoConfigCheck.IsChecked == true;
         _vm.Config.DebugWebDavLog = DebugCheck.IsChecked == true;
 
+        var newLanguage = LanguageBox.SelectedIndex == 1 ? Localization.English : Localization.Chinese;
+        if (newLanguage != _vm.Config.Language)
+        {
+            _vm.Config.Language = newLanguage;
+            Localization.Instance.Language = newLanguage;
+        }
+
         var autostart = AutostartCheck.IsChecked == true;
         if (autostart != AutoStartService.IsEnabled())
         {
             try
             {
                 AutoStartService.SetEnabled(autostart, Environment.ProcessPath ?? AppContext.BaseDirectory);
-                _vm.AppendLog(autostart ? "已添加开机自启动" : "已取消开机自启动");
+                _vm.AppendLog(autostart
+                    ? Localization.T("Set.AutostartAdded")
+                    : Localization.T("Set.AutostartRemoved"));
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, $"无法修改注册表：{ex.Message}", "自启动设置失败",
+                MessageBox.Show(this, Localization.T("Set.AutostartFailed", ex.Message), Localization.T("Common.Error"),
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
         _vm.ApplyConfigChange(_ => { });
-        _vm.AppendLog("⚙ 全局设置已保存。");
+        _vm.AppendLog(Localization.T("Set.Saved"));
         DialogResult = true;
     }
 

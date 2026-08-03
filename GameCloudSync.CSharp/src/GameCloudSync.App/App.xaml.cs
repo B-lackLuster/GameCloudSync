@@ -7,6 +7,7 @@ using GameCloudSync.App.Services;
 using GameCloudSync.App.ViewModels;
 using GameCloudSync.App.Views;
 using GameCloudSync.Core.Services;
+using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App;
 
@@ -54,6 +55,7 @@ public partial class App : Application
 
         // Services
         var configStore = new ConfigStore(appDir);
+        Localization.Instance.Language = configStore.Load().Language;
         var secretStore = new SecretStore(appDir);
         MigrateLegacyPassword(appDir, configStore, secretStore);
 

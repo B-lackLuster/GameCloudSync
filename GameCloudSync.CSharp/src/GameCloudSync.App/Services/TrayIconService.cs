@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using Hardcodet.Wpf.TaskbarNotification;
+using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App.Services;
 
@@ -19,15 +20,20 @@ public sealed class TrayIconService : IDisposable
     {
         _tray = new TaskbarIcon();
         _tray.Icon = LoadIcon(active: false);
-        _tray.ToolTipText = "云存档管家 (未监控)";
+        _tray.ToolTipText = Localization.T("Tray.TooltipIdle");
         _tray.TrayMouseDoubleClick += (_, _) => ShowWindowRequested?.Invoke();
+        RebuildMenu();
+        Localization.Instance.LanguageChanged += RebuildMenu;
+    }
 
+    private void RebuildMenu()
+    {
         var menu = new ContextMenu();
-        menu.Items.Add(MenuItem("显示主界面", () => ShowWindowRequested?.Invoke()));
-        menu.Items.Add(MenuItem("启动监控", () => StartMonitoringRequested?.Invoke()));
-        menu.Items.Add(MenuItem("停止监控", () => StopMonitoringRequested?.Invoke()));
+        menu.Items.Add(MenuItem(Localization.T("Tray.ShowMain"), () => ShowWindowRequested?.Invoke()));
+        menu.Items.Add(MenuItem(Localization.T("Tray.StartMonitor"), () => StartMonitoringRequested?.Invoke()));
+        menu.Items.Add(MenuItem(Localization.T("Tray.StopMonitor"), () => StopMonitoringRequested?.Invoke()));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("完全退出", () => QuitRequested?.Invoke()));
+        menu.Items.Add(MenuItem(Localization.T("Tray.Quit"), () => QuitRequested?.Invoke()));
         _tray.ContextMenu = menu;
     }
 
@@ -35,8 +41,8 @@ public sealed class TrayIconService : IDisposable
     {
         _tray.Icon = LoadIcon(monitoring);
         _tray.ToolTipText = monitoring
-            ? $"云存档管家 (监控中 {count} 个)"
-            : "云存档管家 (未监控)";
+            ? Localization.T("Tray.TooltipMonitoring", count)
+            : Localization.T("Tray.TooltipIdle");
     }
 
     private static MenuItem MenuItem(string header, Action action)

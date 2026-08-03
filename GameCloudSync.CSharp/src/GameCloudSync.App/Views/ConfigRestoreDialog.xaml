@@ -1,7 +1,8 @@
 <Window x:Class="GameCloudSync.App.Views.ConfigRestoreDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="从云端恢复配置" Width="680" Height="330"
+        xmlns:loc="clr-namespace:GameCloudSync.Core.Services;assembly=GameCloudSync.Core"
+        Title="{Binding [CfgRestore.Title], Source={x:Static loc:Localization.Instance}}" Width="680" Height="330"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         ShowInTaskbar="False">
     <Grid Margin="18">
@@ -11,7 +12,7 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="请选择配置来源（每个来源只显示最新配置）："
+        <TextBlock Grid.Row="0" Text="{Binding [CfgRestore.Prompt], Source={x:Static loc:Localization.Instance}}"
                    FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"
                    Margin="0,0,0,12" />
 
@@ -37,9 +38,9 @@
         </ListBox>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-            <Button Content="恢复选中来源" Style="{StaticResource PrimaryButton}" Click="OnRestore"
+            <Button Content="{Binding [Btn.RestoreSource], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource PrimaryButton}" Click="OnRestore"
                     Margin="0,0,10,0" />
-            <Button Content="取消" Style="{StaticResource SecondaryButton}" IsCancel="True"
+            <Button Content="{Binding [Common.Cancel], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}" IsCancel="True"
                     Click="OnCancel" />
         </StackPanel>
     </Grid>

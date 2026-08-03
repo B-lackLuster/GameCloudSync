@@ -4,8 +4,10 @@ using System.Windows.Controls;
 using GameCloudSync.App.ViewModels;
 using GameCloudSync.Core;
 using GameCloudSync.Core.Models;
+using GameCloudSync.Core.Services;
 using GameCloudSync.Core.Util;
 using Microsoft.Win32;
+using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App.Views;
 
@@ -22,7 +24,7 @@ public partial class HistoryWindow : Window
         _vm = vm;
         _game = game;
         DataContext = this;
-        HeaderText = $"历史备份 - {game.Name}";
+        HeaderText = Localization.T("Hist.Title", game.Name);
         Loaded += async (_, _) => await LoadAsync();
     }
 
@@ -60,26 +62,27 @@ public partial class HistoryWindow : Window
         var selected = odSelected.Count > 0 ? odSelected : wdSelected;
         if (selected.Count == 0)
         {
-            MessageBox.Show(this, "请先选中要恢复的备份。", "提示",
+            MessageBox.Show(this, Localization.T("Hist.SelectFirst"), Localization.T("Common.Info"),
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         var item = selected[0];
-        if (MessageBox.Show(this, $"确定要用备份「{item.Name}」覆盖本地存档吗？\n当前本地存档将被删除！",
-                "确认恢复", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+        if (MessageBox.Show(this, Localization.T("Hist.RestoreConfirm", item.Name),
+                Localization.T("Common.Confirm"), MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
         {
             return;
         }
         try
         {
             await _vm.RestoreFromHistoryAsync(_game, item.Name, webDav: wdSelected.Count > 0);
-            MessageBox.Show(this, $"游戏「{_game.Name}」已恢复到备份版本 {item.Name}", "恢复成功",
+            MessageBox.Show(this, Localization.T("Hist.RestoreSuccess", _game.Name, item.Name), Localization.T("Common.Success"),
                 MessageBoxButton.OK, MessageBoxImage.Information);
             Close();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"恢复失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, Localization.T("Msg.RestoreFailed", ex.Message), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -88,7 +91,7 @@ public partial class HistoryWindow : Window
         if (OneDriveList.SelectedItems.Count > 0)
         {
             var selected = OneDriveList.SelectedItems.OfType<HistoryItem>().ToList();
-            if (MessageBox.Show(this, $"确定要删除选中的 {selected.Count} 个 OneDrive 备份吗？", "确认删除",
+            if (MessageBox.Show(this, Localization.T("Hist.DeleteConfirmOd", selected.Count), Localization.T("Common.Confirm"),
                     MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             {
                 return;
@@ -99,7 +102,7 @@ public partial class HistoryWindow : Window
         else if (WebDavList.SelectedItems.Count > 0)
         {
             var selected = WebDavList.SelectedItems.OfType<HistoryItem>().ToList();
-            if (MessageBox.Show(this, $"确定要删除选中的 {selected.Count} 个 WebDAV 备份吗？", "确认删除",
+            if (MessageBox.Show(this, Localization.T("Hist.DeleteConfirmWd", selected.Count), Localization.T("Common.Confirm"),
                     MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             {
                 return;
@@ -109,7 +112,8 @@ public partial class HistoryWindow : Window
         }
         else
         {
-            MessageBox.Show(this, "请先选中要删除的备份。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Hist.SelectDelete"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         await LoadAsync();
@@ -117,7 +121,7 @@ public partial class HistoryWindow : Window
 
     private async void OnDownload(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog { Title = "选择下载保存目录" };
+        var dialog = new OpenFolderDialog { Title = Localization.T("Hist.PickDownloadDir") };
         if (dialog.ShowDialog(this) != true)
             return;
         var destDir = dialog.FolderName;
@@ -134,10 +138,12 @@ public partial class HistoryWindow : Window
         }
         if (count == 0)
         {
-            MessageBox.Show(this, "请先选中要下载的备份（可多选）。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("Hist.SelectDownload"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        MessageBox.Show(this, $"已下载 {count} 个备份到 {destDir}", "完成", MessageBoxButton.OK, MessageBoxImage.Information);
+        MessageBox.Show(this, Localization.T("Hist.DownloadDone", count, destDir), Localization.T("Common.Done"),
+            MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private void OnClose(object sender, RoutedEventArgs e)

@@ -76,7 +76,7 @@ public sealed class WebDavClient : IDisposable
             extraHeaders: new Dictionary<string, string> { ["Depth"] = depth }, ct: ct);
         if (status != 207)
         {
-            _log?.Invoke($"⚠ WebDAV PROPFIND {path}: HTTP {status}");
+            _log?.Invoke(Localization.T("Log.WebDavPropfind", path, status));
             return new List<(string, string)>();
         }
 
@@ -101,9 +101,9 @@ public sealed class WebDavClient : IDisposable
         }
         catch (Exception ex)
         {
-            _log?.Invoke($"⚠ WebDAV PROPFIND {path}: XML parse failed ({ex.Message})");
+            _log?.Invoke(Localization.T("Log.WebDavXmlError", path, ex.Message));
         }
-        _debug?.Invoke($"⚡ WebDAV PROPFIND {path}: {results.Count} items");
+        _debug?.Invoke(Localization.T("Log.WebDavPropfindDbg", path, results.Count));
         return results;
     }
 
@@ -156,7 +156,7 @@ public sealed class WebDavClient : IDisposable
     {
         if (!await MkColAsync(remoteDir, ct))
         {
-            _log?.Invoke($"⚠ WebDAV MKCOL {remoteDir}: create directory failed");
+            _log?.Invoke(Localization.T("Log.WebDavMkcolFail", remoteDir));
             return false;
         }
 
@@ -169,7 +169,7 @@ public sealed class WebDavClient : IDisposable
             var currentRemote = rel == "." ? remoteDir : $"{remoteDir}/{rel}";
             if (rel != "." && !await MkColAsync(currentRemote, ct))
             {
-                _log?.Invoke($"⚠ WebDAV MKCOL {currentRemote}: create directory failed");
+                    _log?.Invoke(Localization.T("Log.WebDavMkcolFail", currentRemote));
                 return false;
             }
             foreach (var file in Directory.EnumerateFiles(walkRoot))
@@ -191,7 +191,7 @@ public sealed class WebDavClient : IDisposable
                 if (!await PutFileAsync(task.Local, task.Remote, token))
                 {
                     failed = true;
-                    _log?.Invoke($"⚠ WebDAV upload failed: {task.Remote}");
+                    _log?.Invoke(Localization.T("Log.WebDavUploadItemFail", task.Remote));
                 }
             });
         return !failed;
@@ -204,7 +204,7 @@ public sealed class WebDavClient : IDisposable
         await CollectFilesAsync(remoteDir, localDir, allFiles, ct);
         if (allFiles.Count == 0)
         {
-            _log?.Invoke($"⚠ WebDAV download_dir '{remoteDir}': no files found");
+            _log?.Invoke(Localization.T("Log.WebDavNoFiles", remoteDir));
             return 0;
         }
 

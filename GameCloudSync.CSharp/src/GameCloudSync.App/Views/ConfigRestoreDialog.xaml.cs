@@ -1,7 +1,9 @@
 using System.Windows;
 using GameCloudSync.App.ViewModels;
 using GameCloudSync.Core.Models;
+using GameCloudSync.Core.Services;
 using GameCloudSync.Core.Util;
+using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App.Views;
 
@@ -24,7 +26,7 @@ public partial class ConfigRestoreDialog : Window
         var summaries = await _vm.ListConfigSourcesAsync();
         _items = summaries.Select(s => new ConfigSourceItem(
             s.Source,
-            $"{s.Filename}  ←  {s.Games.Count} 个游戏",
+            Localization.T("CfgRestore.Summary", s.Filename, s.Games.Count),
             s.Status,
             s)).ToList();
         SourceList.ItemsSource = _items;
@@ -34,7 +36,8 @@ public partial class ConfigRestoreDialog : Window
     {
         if (SourceList.SelectedItem is not ConfigSourceItem item)
         {
-            MessageBox.Show(this, "请先选择一个配置来源。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, Localization.T("CfgRestore.SelectFirst"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         Result = (item.CloudSummary.Source, item.CloudSummary.Filename, item.CloudSummary.Games);
