@@ -39,20 +39,20 @@ public sealed class GameItemViewModel : ObservableObject
 
     public Brush StatusBrush => Status.Kind switch
     {
-        SyncStatusKind.Synced => Brush(Solid("#10B981")),
-        SyncStatusKind.LocalNew => Brush(Solid("#EF4444")),
-        SyncStatusKind.CloudNew => Brush(Solid("#4A6CF7")),
-        SyncStatusKind.Paused => Brush(Solid("#94A3B8")),
-        _ => Brush(Solid("#64748B"))
+        SyncStatusKind.Synced => Brush(Solid("#6BE0B4")),
+        SyncStatusKind.LocalNew => Brush(Solid("#F1CB8D")),
+        SyncStatusKind.CloudNew => Brush(Solid("#9AD7F1")),
+        SyncStatusKind.Paused => Brush(Solid("#AFBBBD")),
+        _ => Brush(Solid("#ACBABB"))
     };
 
     public Brush StatusBgBrush => Status.Kind switch
     {
-        SyncStatusKind.Synced => Brush(Solid("#D1FAE5")),
-        SyncStatusKind.LocalNew => Brush(Solid("#FEE2E2")),
-        SyncStatusKind.CloudNew => Brush(Solid("#EBF0FF")),
-        SyncStatusKind.Paused => Brush(Solid("#F1F5F9")),
-        _ => Brush(Solid("#F1F5F9"))
+        SyncStatusKind.Synced => Brush(Solid("#213C33")),
+        SyncStatusKind.LocalNew => Brush(Solid("#443B2C")),
+        SyncStatusKind.CloudNew => Brush(Solid("#253E47")),
+        SyncStatusKind.Paused => Brush(Solid("#303739")),
+        _ => Brush(Solid("#303739"))
     };
 
     public void Refresh()

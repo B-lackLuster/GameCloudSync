@@ -1,10 +1,16 @@
 <Window x:Class="GameCloudSync.App.Views.SettingsDialog"
+        Style="{StaticResource {x:Type Window}}"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:loc="clr-namespace:GameCloudSync.Core.Services;assembly=GameCloudSync.Core"
         Title="{Binding [Set.Title], Source={x:Static loc:Localization.Instance}}" Width="640" Height="640"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         ShowInTaskbar="False">
+    <Window.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+    </Window.Resources>
     <Grid Margin="18">
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
@@ -19,7 +25,7 @@
                         <TextBlock Text="{Binding [Set.OneDriveSection], Source={x:Static loc:Localization.Instance}}" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
                         <Grid>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="86" />
+                                <ColumnDefinition Width="104" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
@@ -37,7 +43,7 @@
                         <TextBlock Text="{Binding [Set.WebDavSection], Source={x:Static loc:Localization.Instance}}" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="86" />
+                                <ColumnDefinition Width="104" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="{Binding [Set.ServerUrl], Source={x:Static loc:Localization.Instance}}" VerticalAlignment="Center" />
@@ -45,17 +51,17 @@
                         </Grid>
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="86" />
+                                <ColumnDefinition Width="104" />
                                 <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="{Binding [Set.Username], Source={x:Static loc:Localization.Instance}}" VerticalAlignment="Center" />
                             <TextBox x:Name="UserBox" Grid.Column="1" />
-                            <TextBlock Grid.Column="2" Text="{Binding [Set.Password], Source={x:Static loc:Localization.Instance}}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="2" Margin="12,0,8,0" Text="{Binding [Set.Password], Source={x:Static loc:Localization.Instance}}" VerticalAlignment="Center" />
                             <PasswordBox x:Name="PassBox" Grid.Column="3" />
                         </Grid>
-                        <StackPanel Orientation="Horizontal" Margin="86,0,0,0">
+                        <StackPanel Orientation="Horizontal" Margin="104,0,0,0">
                             <Button x:Name="TestButton" Content="{Binding [Btn.TestWebDav], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}"
                                     Click="OnTestWebDav" />
                             <TextBlock x:Name="TestResult" Margin="12,0,0,0" VerticalAlignment="Center"
@@ -70,7 +76,7 @@
                         <TextBlock Text="{Binding [Set.RetentionSection], Source={x:Static loc:Localization.Instance}}" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
                         <Grid>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="86" />
+                                <ColumnDefinition Width="104" />
                                 <ColumnDefinition Width="70" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
@@ -89,7 +95,7 @@
                         <TextBlock Text="{Binding [Set.DownloadPrefSection], Source={x:Static loc:Localization.Instance}}" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="86" />
+                                <ColumnDefinition Width="104" />
                                 <ColumnDefinition Width="220" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
@@ -101,7 +107,7 @@
                         </Grid>
                         <Grid>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="86" />
+                                <ColumnDefinition Width="104" />
                                 <ColumnDefinition Width="220" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
@@ -120,7 +126,7 @@
                         <TextBlock Text="{Binding [Set.OptionsSection], Source={x:Static loc:Localization.Instance}}" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="86" />
+                                <ColumnDefinition Width="104" />
                                 <ColumnDefinition Width="220" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>

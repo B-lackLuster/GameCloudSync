@@ -38,6 +38,9 @@ public partial class MainWindow : Window
         _vm = viewModel;
         _tray = tray;
         DataContext = viewModel;
+        StateChanged += (_, _) => WindowFrame.Margin = WindowState == WindowState.Maximized
+            ? new Thickness(SystemParameters.WindowResizeBorderThickness.Left + 2)
+            : new Thickness(0);
         viewModel.Logs.CollectionChanged += OnLogsChanged;
         Closing += OnWindowClosing;
         var wakeupTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -47,6 +50,41 @@ public partial class MainWindow : Window
 
     public MainViewModel ViewModel => _vm;
 
+    private void OnNavigateOverview(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel vm) vm.Dashboard.Page = WorkspacePage.Overview;
+    }
+
+    private void OnNavigateLibrary(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel vm) vm.Dashboard.Page = WorkspacePage.Library;
+    }
+
+    private void OnNavigateActivity(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel vm) vm.Dashboard.Page = WorkspacePage.Activity;
+    }
+
+    private void OnOpenLibrary(object sender, RoutedEventArgs e) => _vm.Dashboard.Page = WorkspacePage.Library;
+    private void OnOpenActivity(object sender, RoutedEventArgs e) => _vm.Dashboard.Page = WorkspacePage.Activity;
+
+    private void OnPreviewHistory(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: GameItemViewModel game }) return;
+        _vm.Dashboard.Page = WorkspacePage.Library;
+        GameList.SelectedItem = game;
+        _vm.SetSelection(GameList.SelectedItems);
+        OnShowHistory(sender, e);
+    }
+
+    private void OnMinimizeWindow(object sender, RoutedEventArgs e) => SystemCommands.MinimizeWindow(this);
+    private void OnMaximizeWindow(object sender, RoutedEventArgs e)
+    {
+        if (WindowState == WindowState.Maximized) SystemCommands.RestoreWindow(this);
+        else SystemCommands.MaximizeWindow(this);
+    }
+    private void OnCloseWindow(object sender, RoutedEventArgs e) => Close();
+
     private void OnLogsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         // ScrollIntoView inside the CollectionChanged callback triggers an
@@ -55,7 +93,7 @@ public partial class MainWindow : Window
         // Defer the scroll until layout is idle.
         Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
         {
-            if (_vm.Logs.Count > 0)
+            if (_vm.Dashboard.IsActivity && _vm.Logs.Count > 0)
                 LogList.ScrollIntoView(_vm.Logs[_vm.Logs.Count - 1]);
         });
     }
@@ -91,8 +129,41 @@ public partial class MainWindow : Window
             item.IsSelected = true;
         }
         _vm.SetSelection(GameList.SelectedItems);
+        OpenGameMenu(item);
+        e.Handled = true;
+    }
 
+    private void OnGameActions(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.DataContext is not GameItemViewModel game)
+            return;
+        if (!GameList.SelectedItems.Contains(game))
+            GameList.SelectedItem = game;
+        _vm.SetSelection(GameList.SelectedItems);
+        OpenGameMenu(button);
+        e.Handled = true;
+    }
+
+    private void OpenGameMenu(FrameworkElement target)
+    {
         var menu = (ContextMenu)FindResource("GameContextMenu");
+        menu.PlacementTarget = target;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsEnabled = _vm.CanAct;
+        foreach (var menuItem in menu.Items.OfType<MenuItem>())
+        {
+            var header = menuItem.Header as string;
+            if (header == Localization.T("Menu.BackupToOneDrive") ||
+                header == Localization.T("Menu.BackupToWebDav"))
+            {
+                menuItem.IsEnabled = _vm.SelectedGames.Count == 1;
+                menuItem.IsChecked = false;
+            }
+            if (header == Localization.T("Menu.PauseSync") || header == Localization.T("Menu.ResumeSync"))
+                menuItem.SetBinding(HeaderedItemsControl.HeaderProperty, new System.Windows.Data.Binding(
+                    _vm.SelectedGames.FirstOrDefault()?.IsPaused == true ? "[Menu.ResumeSync]" : "[Menu.PauseSync]")
+                { Source = Localization.Instance });
+        }
         if (_vm.SelectedGames.Count == 1)
         {
             var game = _vm.SelectedGames[0].Game;
@@ -106,7 +177,6 @@ public partial class MainWindow : Window
         }
 
         menu.IsOpen = true;
-        e.Handled = true;
     }
 
     // ---------------- Toolbar ----------------

@@ -44,6 +44,8 @@ public sealed class MainViewModel : ObservableObject
         _monitoring = monitoring;
         _ui = ui;
         _config = configStore.Load();
+        Dashboard = new DashboardViewModel(this);
+        Games.CollectionChanged += (_, _) => OnPropertyChanged(nameof(GameCountText));
         _webDavPassword = _secretStore.LoadPassword() ?? "";
 
         _monitoring.StateChanged += () => RunOnUi(() =>
@@ -56,6 +58,7 @@ public sealed class MainViewModel : ObservableObject
         Localization.Instance.LanguageChanged += () => RunOnUi(() =>
         {
             OnPropertyChanged(nameof(CloudStatusText));
+            OnPropertyChanged(nameof(GameCountText));
             OnPropertyChanged(nameof(MonitorButtonText));
             OnPropertyChanged(nameof(MonitorStateText));
             OnPropertyChanged(nameof(UpdateConfigButtonText));
@@ -64,6 +67,7 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public AppConfig Config => _config;
+    public DashboardViewModel Dashboard { get; }
     public string WebDavPassword => _webDavPassword;
     public ConfigStore ConfigStore => _configStore;
     public SecretStore SecretStore => _secretStore;
@@ -85,6 +89,7 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public bool CanAct => !IsBusy;
+    public string GameCountText => Localization.T("Main.GameCount", Games.Count);
 
     public bool HasPendingCloudUpdate
     {
@@ -106,7 +111,11 @@ public sealed class MainViewModel : ObservableObject
         private set
         {
             if (SetProperty(ref _isMonitoring, value))
+            {
                 OnPropertyChanged(nameof(MonitorButtonText));
+                OnPropertyChanged(nameof(MonitorStateBrush));
+                OnPropertyChanged(nameof(MonitorStateText));
+            }
         }
     }
 
@@ -158,6 +167,7 @@ public sealed class MainViewModel : ObservableObject
         foreach (var game in _config.Games)
             Games.Add(new GameItemViewModel(game));
         AppendLog(Localization.T("Log.Welcome", Games.Count));
+        _ = RefreshGamesAsync();
         if (_config.WebDavUrl.Length > 0)
             _ = Task.Run(TestWebDavAsync);
     }
@@ -229,7 +239,7 @@ public sealed class MainViewModel : ObservableObject
 
     public async Task RefreshGamesAsync(bool checkWebDav = false)
     {
-        foreach (var item in Games)
+        foreach (var item in Games.ToList())
         {
             item.Status = await _backupService.GetSyncStatusAsync(
                 item.Game, _config, _webDavPassword, checkWebDav);
@@ -292,6 +302,8 @@ public sealed class MainViewModel : ObservableObject
         }
         finally
         {
+            // Replacing a save folder leaves FileSystemWatcher attached to the old directory.
+            _monitoring.RestartIfActive();
             IsBusy = false;
             await RefreshGamesAsync();
         }
@@ -309,6 +321,7 @@ public sealed class MainViewModel : ObservableObject
         }
         finally
         {
+            _monitoring.RestartIfActive();
             IsBusy = false;
             await RefreshGamesAsync();
         }
@@ -557,6 +570,7 @@ public sealed class MainViewModel : ObservableObject
                     await _backupService.RestoreFromOneDriveAsync(game, Path.GetFileName(source.Path), _config, AppendLog);
                 else
                     await _backupService.RestoreFromWebDavAsync(game, source.Path, _config, _webDavPassword, AppendLog);
+                _monitoring.RestartIfActive();
                 await Task.Delay(1000);
             }
             else
