@@ -4,6 +4,41 @@ namespace GameCloudSync.Core.Util;
 
 public static partial class FileUtil
 {
+    // Stage beside the save directory so the final rename stays on the same volume.
+    public static async Task RestoreDirectoryAsync(string destination,
+        Func<string, Task> prepare, CancellationToken ct = default)
+    {
+        var target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destination));
+        var parent = Path.GetDirectoryName(target)
+            ?? throw new ArgumentException("A volume root cannot be a save directory.", nameof(destination));
+        Directory.CreateDirectory(parent);
+        var staging = Path.Combine(parent, $".gcs-restore-{Guid.NewGuid():N}");
+        var previous = Path.Combine(parent, $".gcs-previous-{Guid.NewGuid():N}");
+        try
+        {
+            await prepare(staging);
+            ct.ThrowIfCancellationRequested();
+            if (Directory.Exists(target))
+                Directory.Move(target, previous);
+            try
+            {
+                Directory.Move(staging, target);
+            }
+            catch
+            {
+                if (Directory.Exists(previous))
+                    Directory.Move(previous, target);
+                throw;
+            }
+        }
+        finally
+        {
+            // Cleanup must not mask a restore failure or report a committed restore as failed.
+            try { DeleteDirectorySafe(staging); } catch { }
+        }
+        try { DeleteDirectorySafe(previous); } catch { }
+    }
+
     public static long GetLatestMTime(string folder)
     {
         long latest = 0;

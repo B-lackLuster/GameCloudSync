@@ -83,11 +83,8 @@ public sealed class BackupService
         CancellationToken ct = default)
     {
         var backupPath = Path.Combine(config.CloudRoot, game.Name, backupName);
-        FileUtil.DeleteDirectorySafe(game.Save);
-        // The game may never have been launched on this machine; create the
-        // full save path (including missing parents) before copying.
-        Directory.CreateDirectory(game.Save);
-        await FileUtil.CopyDirectoryAsync(backupPath, game.Save, ct);
+        await FileUtil.RestoreDirectoryAsync(game.Save,
+            staging => FileUtil.CopyDirectoryAsync(backupPath, staging, ct), ct);
         log(Localization.T("Log.RestoreOdDone", game.Name, backupName));
     }
 
@@ -102,24 +99,14 @@ public sealed class BackupService
         using var wc = _webDavFactory(config.WebDavUrl, webDavPassword);
         var remoteDir = $"{game.Name}/{backupName}";
         log(Localization.T("Log.RestoreWdStart", remoteDir));
-        var tmpDir = game.Save + ".tmp";
-        FileUtil.DeleteDirectorySafe(tmpDir);
-        var count = await wc.DownloadDirAsync(remoteDir, tmpDir, ct);
-        if (count == 0)
+        var count = 0;
+        await FileUtil.RestoreDirectoryAsync(game.Save, async staging =>
         {
-            FileUtil.DeleteDirectorySafe(tmpDir);
-            throw new InvalidOperationException(
-                Localization.T("Log.RestoreWdEmpty", remoteDir));
-        }
-        FileUtil.DeleteDirectorySafe(game.Save);
-        // Directory.Move requires the destination's parent to exist. On a new
-        // machine the whole save path may be missing because the game was
-        // never launched, so create the parent chain explicitly.
-        var saveParent = Path.GetDirectoryName(game.Save);
-        if (!string.IsNullOrEmpty(saveParent))
-            Directory.CreateDirectory(saveParent);
-        Directory.Move(tmpDir, game.Save);
-        FileUtil.ApplyBackupMTime(backupName, game.Save);
+            count = await wc.DownloadDirAsync(remoteDir, staging, ct);
+            if (count == 0)
+                throw new InvalidOperationException(Localization.T("Log.RestoreWdEmpty", remoteDir));
+            FileUtil.ApplyBackupMTime(backupName, staging);
+        }, ct);
         log(Localization.T("Log.RestoreWdDone", count));
         log(Localization.T("Log.RestoreWdDoneFull", game.Name, backupName));
     }

@@ -21,14 +21,14 @@ public sealed class WebDavClient : IDisposable
 
     public WebDavClient(string url, string username, string password,
         Action<string>? log = null, Action<string>? debug = null,
-        int timeoutSeconds = 30)
+        int timeoutSeconds = 30, HttpMessageHandler? messageHandler = null)
     {
         _baseUrl = url.TrimEnd('/');
-        _urlPath = new Uri(_baseUrl).AbsolutePath.TrimEnd('/');
+        _urlPath = Uri.UnescapeDataString(new Uri(_baseUrl).AbsolutePath).TrimEnd('/');
         _log = log;
         _debug = debug;
 
-        var handler = new SocketsHttpHandler
+        var handler = messageHandler ?? new SocketsHttpHandler
         {
             PooledConnectionLifetime = TimeSpan.FromMinutes(15),
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
@@ -77,24 +77,29 @@ public sealed class WebDavClient : IDisposable
         if (status != 207)
         {
             _log?.Invoke(Localization.T("Log.WebDavPropfind", path, status));
-            return new List<(string, string)>();
+            throw new HttpRequestException($"WebDAV PROPFIND '{path}' returned HTTP {status}.");
         }
 
         var results = new List<(string Href, string Name)>();
         try
         {
             var doc = XDocument.Parse(Encoding.UTF8.GetString(body));
+            if (doc.Root?.Name != DavNs + "multistatus")
+                throw new InvalidDataException("Expected a DAV multistatus response.");
             foreach (var resp in doc.Descendants(DavNs + "response"))
             {
                 var hrefEl = resp.Element(DavNs + "href");
                 var prop = resp.Elements(DavNs + "propstat")
+                    .Where(ps => ps.Element(DavNs + "status")?.Value.Contains(" 200 ") == true)
                     .Select(ps => ps.Element(DavNs + "prop"))
                     .FirstOrDefault(p => p is not null);
                 if (hrefEl is null || prop is null)
-                    continue;
+                    throw new InvalidDataException("A WebDAV entry is missing its path or readable properties.");
                 var href = hrefEl.Value;
-                var name = prop.Element(DavNs + "displayname")?.Value
-                    ?? href.TrimEnd('/').Split('/').LastOrDefault() ?? "";
+                var name = Uri.UnescapeDataString(new Uri(new Uri(_baseUrl + "/"), href)
+                    .AbsolutePath.TrimEnd('/').Split('/').LastOrDefault() ?? "");
+                if (prop.Element(DavNs + "resourcetype")?.Element(DavNs + "collection") is not null)
+                    href = href.TrimEnd('/') + "/";
                 if (!string.IsNullOrEmpty(name))
                     results.Add((href, name));
             }
@@ -102,6 +107,7 @@ public sealed class WebDavClient : IDisposable
         catch (Exception ex)
         {
             _log?.Invoke(Localization.T("Log.WebDavXmlError", path, ex.Message));
+            throw new InvalidDataException($"Invalid WebDAV directory listing for '{path}'.", ex);
         }
         _debug?.Invoke(Localization.T("Log.WebDavPropfindDbg", path, results.Count));
         return results;
@@ -114,10 +120,7 @@ public sealed class WebDavClient : IDisposable
         var names = new List<string>();
         foreach (var (href, name) in items)
         {
-            var decoded = Uri.UnescapeDataString(href);
-            var hrefPath = new Uri(decoded, UriKind.RelativeOrAbsolute).IsAbsoluteUri
-                ? new Uri(decoded).AbsolutePath.TrimEnd('/')
-                : decoded.TrimEnd('/');
+            var hrefPath = DecodeHrefPath(href);
             if (hrefPath == serverPath)
                 continue;
             names.Add(name);
@@ -220,15 +223,9 @@ public sealed class WebDavClient : IDisposable
             new ParallelOptions { MaxDegreeOfParallelism = Constants.WebDavWorkers, CancellationToken = ct },
             async (task, token) =>
             {
-                try
-                {
-                    if (await GetFileAsync(task.Remote, task.Local, token))
-                        Interlocked.Increment(ref downloaded);
-                }
-                catch
-                {
-                    // skip failed files
-                }
+                if (!await GetFileAsync(task.Remote, task.Local, token))
+                    throw new IOException($"WebDAV download failed: {task.Remote}");
+                Interlocked.Increment(ref downloaded);
             });
         return downloaded;
     }
@@ -241,12 +238,12 @@ public sealed class WebDavClient : IDisposable
         foreach (var (href, name) in items)
         {
             ct.ThrowIfCancellationRequested();
-            var decoded = Uri.UnescapeDataString(href);
-            var hrefPath = new Uri(decoded, UriKind.RelativeOrAbsolute).IsAbsoluteUri
-                ? new Uri(decoded).AbsolutePath.TrimEnd('/')
-                : decoded.TrimEnd('/');
+            var hrefPath = DecodeHrefPath(href);
             if (hrefPath == serverPath)
                 continue;
+            if (string.IsNullOrWhiteSpace(name) || name is "." or ".." ||
+                name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                throw new InvalidDataException($"Invalid WebDAV filename: {name}");
             var localChild = Path.Combine(localDir, name);
             if (href.EndsWith('/'))
             {
@@ -276,7 +273,7 @@ public sealed class WebDavClient : IDisposable
             foreach (var (key, value) in extraHeaders)
                 request.Headers.TryAddWithoutValidation(key, value);
         }
-        var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
         var body = await response.Content.ReadAsByteArrayAsync(ct);
         return ((int)response.StatusCode, body);
     }
@@ -286,4 +283,7 @@ public sealed class WebDavClient : IDisposable
         var parts = path.TrimStart('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
         return string.Join('/', parts.Select(Uri.EscapeDataString));
     }
+
+    private string DecodeHrefPath(string href) =>
+        Uri.UnescapeDataString(new Uri(new Uri(_baseUrl + "/"), href).AbsolutePath).TrimEnd('/');
 }
