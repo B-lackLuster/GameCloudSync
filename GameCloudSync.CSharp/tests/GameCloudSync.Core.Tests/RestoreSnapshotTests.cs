@@ -51,6 +51,21 @@ public sealed class RestoreSnapshotTests : IDisposable
     }
 
     [Fact]
+    public async Task CancelledRestore_IsReportedAsCancelled_AndLeavesSaveAndNoSnapshot()
+    {
+        await File.WriteAllTextAsync(Path.Combine(_save, "slot.sav"), "local progress");
+        using var cancel = new CancellationTokenSource();
+        cancel.Cancel();
+
+        // Not wrapped as "the snapshot could not be saved": the window tells a cancel from a failure.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            _service.RestoreFromOneDriveAsync(_game, "save_20260101_120000", _config, _ => { }, cancel.Token));
+
+        Assert.Equal("local progress", LocalSave());
+        Assert.Empty(_service.ListRestoreSnapshots(_game));
+    }
+
+    [Fact]
     public async Task FailedRestore_LeavesSaveAndNoSnapshot()
     {
         await File.WriteAllTextAsync(Path.Combine(_save, "slot.sav"), "local progress");

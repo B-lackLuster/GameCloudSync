@@ -1,14 +1,14 @@
-# Python
+# Python 旧版留在本地的缓存（源码已移除）
 __pycache__/
 *.pyc
-*.pyo
 
-# PyInstaller 打包产物
+# 本地构建与冒烟测试产物
 build/
 dist/
 
-# 用户配置文件（含 WebDAV 账号等敏感信息）
+# 用户配置文件（含 WebDAV 账号等敏感信息）与本机同步记录
 config.json
+sync-state.json
 
 # 加密后的 WebDAV 凭据 / Fernet 盐文件（与机器绑定，不应入库或同步）
 .gcs_webdav.cred

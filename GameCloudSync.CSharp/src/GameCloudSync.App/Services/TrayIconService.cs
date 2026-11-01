@@ -19,10 +19,12 @@ public sealed class TrayIconService : IDisposable
     private const int MaxBalloonText = 250;
 
     private readonly TaskbarIcon _tray;
+    private MenuItem? _monitorItem;
+    private bool _monitoring;
 
     public event Action? ShowWindowRequested;
-    public event Action? StartMonitoringRequested;
-    public event Action? StopMonitoringRequested;
+    /// <summary>The monitoring switch was clicked: start when stopped, stop when running.</summary>
+    public event Action? ToggleMonitoringRequested;
     public event Action? QuitRequested;
 
     public TrayIconService()
@@ -39,8 +41,10 @@ public sealed class TrayIconService : IDisposable
     {
         var menu = new ContextMenu();
         menu.Items.Add(MenuItem(Localization.T("Tray.ShowMain"), () => ShowWindowRequested?.Invoke()));
-        menu.Items.Add(MenuItem(Localization.T("Tray.StartMonitor"), () => StartMonitoringRequested?.Invoke()));
-        menu.Items.Add(MenuItem(Localization.T("Tray.StopMonitor"), () => StopMonitoringRequested?.Invoke()));
+        // One switch whose tick shows the state, instead of "start" and "stop" side by side with one of them doing nothing.
+        _monitorItem = MenuItem(Localization.T("Tray.Monitor"), () => ToggleMonitoringRequested?.Invoke());
+        _monitorItem.IsChecked = _monitoring;
+        menu.Items.Add(_monitorItem);
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem(Localization.T("Tray.Quit"), () => QuitRequested?.Invoke()));
         _tray.ContextMenu = menu;
@@ -49,6 +53,9 @@ public sealed class TrayIconService : IDisposable
     /// <param name="problems">Games whose backups need attention; they turn the icon red.</param>
     public void SetState(bool monitoring, int count, int problems)
     {
+        _monitoring = monitoring;
+        if (_monitorItem is not null)
+            _monitorItem.IsChecked = monitoring;
         var state = problems > 0 ? TrayState.Problem : monitoring ? TrayState.Monitoring : TrayState.Idle;
         _tray.Icon = IconFor(state);
         _tray.ToolTipText = problems > 0

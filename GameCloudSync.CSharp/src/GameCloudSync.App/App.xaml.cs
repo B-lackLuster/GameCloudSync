@@ -20,6 +20,7 @@ public partial class App : Application
     private MainWindow? _mainWindow;
     private MonitoringService? _monitoring;
     private FileLog? _fileLog;
+    private string? _dataDir;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -47,7 +48,11 @@ public partial class App : Application
             Environment.SetEnvironmentVariable("windir", Environment.GetEnvironmentVariable("SystemRoot"));
         }
 
-        var appDir = AppContext.BaseDirectory;
+        // Portable by default; when the program folder can't be written (Program Files) everything goes to %APPDATA%.
+        var exeDir = AppContext.BaseDirectory;
+        var appDir = DataDirectory.Resolve(exeDir,
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Constants.AppFolderName));
+        _dataDir = appDir;
         _singleInstance = new SingleInstance();
         if (!_singleInstance.TryAcquire(appDir, Constants.WakeupFileName))
         {
@@ -59,6 +64,9 @@ public partial class App : Application
         var startMinimized = AutostartCommand.StartsMinimized(e.Args);
         _fileLog = new FileLog(Path.Combine(appDir, Constants.LogDirName, Constants.LogFileName));
         _fileLog.Write($"GameCloudSync started ({(startMinimized ? "minimized to the tray" : "main window")})");
+        var movedToAppData = !string.Equals(appDir, exeDir, StringComparison.OrdinalIgnoreCase);
+        if (movedToAppData)
+            _fileLog.Write($"The program folder {exeDir} can't be written; using {appDir}");
         if (Environment.ProcessPath is { } exePath)
             AutoStartService.UpgradeLegacyEntry(exePath);
 
@@ -94,7 +102,7 @@ public partial class App : Application
             return new WebDavClient(url, cfg.WebDavUsername, password,
                 log: vm is null ? null : m => vm.AppendLog(m),
                 debug: cfg.DebugWebDavLog && vm is not null ? m => vm.AppendLog(m) : null);
-        }, snapshotRoot: Path.Combine(appDir, Constants.RestoreSnapshotDir));
+        }, snapshotRoot: Path.Combine(appDir, Constants.RestoreSnapshotDir), baselines: new SyncBaselineStore(appDir));
         var cloudConfigService = new CloudConfigService((url, password) =>
         {
             var cfg = configStore.Load();
@@ -115,14 +123,18 @@ public partial class App : Application
         // Tray
         _tray = new TrayIconService();
         _tray.ShowWindowRequested += () => ShowMainWindow();
-        _tray.StartMonitoringRequested += () =>
+        _tray.ToggleMonitoringRequested += () =>
         {
-            _monitoring.Start();
-            UpdateTray();
-        };
-        _tray.StopMonitoringRequested += () =>
-        {
-            _monitoring.Stop();
+            // A restore pauses monitoring while it replaces the save, and starts it again itself.
+            if (_mainWindow?.ViewModel.CanAct == false)
+            {
+                _tray.ShowNotification("GameCloudSync", Localization.T("Main.Busy"), isError: false);
+                return;
+            }
+            if (_monitoring.IsMonitoring)
+                _monitoring.Stop();
+            else
+                _monitoring.Start();
             UpdateTray();
         };
         _tray.QuitRequested += () => ShutdownApp();
@@ -142,6 +154,8 @@ public partial class App : Application
             _mainWindow.Show();
 
         viewModel.Load();
+        if (movedToAppData)
+            viewModel.ShowLog(Localization.T("Log.DataDirFallback", exeDir, appDir));
         if (configStore.CorruptConfigPath is { } corruptPath)
         {
             var notice = Localization.T(configStore.RecoveredFromBackup ? "Cfg.RecoveredFromBak" : "Cfg.CorruptReset",
@@ -244,7 +258,7 @@ public partial class App : Application
         _fileLog?.Write($"[{source}] unhandled exception: {ex}");
         try
         {
-            var path = Path.Combine(AppContext.BaseDirectory, "crash.log");
+            var path = Path.Combine(_dataDir ?? AppContext.BaseDirectory, "crash.log");
             File.AppendAllText(path,
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [{source}] {ex}\n\n",
                 Encoding.UTF8);

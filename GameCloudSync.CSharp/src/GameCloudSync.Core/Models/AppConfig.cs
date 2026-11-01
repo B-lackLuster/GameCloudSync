@@ -21,5 +21,7 @@ public sealed class AppConfig
     public string DefaultConfigSource { get; set; } = Constants.SourceAsk;
     [JsonPropertyName("debug_webdav_log")]
     public bool DebugWebDavLog { get; set; }
+    /// <summary>The "still running in the tray" notice was shown the first time the window was closed.</summary>
+    public bool TrayHintShown { get; set; }
     public List<GameConfig> Games { get; set; } = new();
 }

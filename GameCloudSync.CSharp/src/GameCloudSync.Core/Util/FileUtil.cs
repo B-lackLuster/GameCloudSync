@@ -229,13 +229,28 @@ public static partial class FileUtil
         }
     }
 
-    /// <summary>Rewrites a save path so C:\Users\&lt;olduser&gt;\ becomes the current user's profile.</summary>
+    // Profiles every user shares; a path into one of them is the same on every PC.
+    private static readonly HashSet<string> SharedProfiles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Public", "Default", "Default User", "All Users"
+    };
+
+    /// <summary>Expands %APPDATA%-style variables, so a save path can be written the same way on every PC.</summary>
+    public static string ExpandSavePath(string saveDir) =>
+        string.IsNullOrEmpty(saveDir) ? saveDir : Environment.ExpandEnvironmentVariables(saveDir);
+
+    /// <summary>
+    /// Makes a save path that comes from another PC usable here: variables such as %APPDATA% are expanded,
+    /// and C:\Users\&lt;olduser&gt;\ becomes the current user's profile folder.
+    /// </summary>
     public static string FixSavePath(string saveDir)
     {
-        var currentUser = Environment.GetEnvironmentVariable("USERNAME");
-        if (string.IsNullOrEmpty(currentUser))
-            return saveDir;
-        return UserPathRegex().Replace(saveDir, $@"C:\Users\{currentUser}\");
+        var path = ExpandSavePath(saveDir);
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(profile))
+            return path;
+        return UserPathRegex().Replace(path,
+            match => SharedProfiles.Contains(match.Groups[1].Value) ? match.Value : profile + @"\", 1);
     }
 
     /// <summary>Applies the mtime encoded in a WebDAV backup folder name to all files under targetDir.</summary>
@@ -290,6 +305,6 @@ public static partial class FileUtil
         }
     }
 
-    [GeneratedRegex(@"C:\\Users\\([^\\]+)\\", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^C:\\Users\\([^\\]+)\\", RegexOptions.IgnoreCase)]
     private static partial Regex UserPathRegex();
 }

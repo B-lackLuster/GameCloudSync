@@ -3,7 +3,11 @@ namespace GameCloudSync.Core;
 public static class Constants
 {
     public const string ConfigFileName = "config.json";
+    // What this PC last had in common with the cloud, per game; never part of config.json (see SyncBaselineStore).
+    public const string SyncStateFileName = "sync-state.json";
     public const string WakeupFileName = "wakeup.tmp";
+    // Used for %APPDATA%\GameCloudSync when the exe's folder is read-only, and for the suggested OneDrive folder.
+    public const string AppFolderName = "GameCloudSync";
     public const string CredFileName = ".gcs_webdav.cred";
     public const string SaltFileName = ".gcs_salt";
     public const string MutexName = "Global\\GameCloudSync_Unique_Mutex";

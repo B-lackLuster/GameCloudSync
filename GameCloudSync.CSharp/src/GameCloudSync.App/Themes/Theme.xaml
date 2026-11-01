@@ -486,6 +486,30 @@
             </ControlTemplate.Triggers>
         </ControlTemplate></Setter.Value></Setter>
     </Style>
+    <!-- Work of unknown length: a short segment sweeps along the track for as long as the bar is on screen. -->
+    <Style x:Key="BusyProgress" TargetType="ProgressBar">
+        <Setter Property="Height" Value="4" /><Setter Property="Foreground" Value="{StaticResource PrimaryBrush}" />
+        <Setter Property="IsIndeterminate" Value="True" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ProgressBar">
+            <Border Background="#343D3E" CornerRadius="2" ClipToBounds="True">
+                <Border Width="40" HorizontalAlignment="Left" Background="{TemplateBinding Foreground}" CornerRadius="2">
+                    <Border.RenderTransform><TranslateTransform x:Name="Sweep" X="-40" /></Border.RenderTransform>
+                </Border>
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsVisible" Value="True">
+                    <Trigger.EnterActions>
+                        <BeginStoryboard x:Name="SweepAnimation">
+                            <Storyboard RepeatBehavior="Forever">
+                                <DoubleAnimation Storyboard.TargetName="Sweep" Storyboard.TargetProperty="X" From="-40" To="120" Duration="0:0:1.2" />
+                            </Storyboard>
+                        </BeginStoryboard>
+                    </Trigger.EnterActions>
+                    <Trigger.ExitActions><StopStoryboard BeginStoryboardName="SweepAnimation" /></Trigger.ExitActions>
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
     <Style x:Key="SyncProgress" TargetType="ProgressBar">
         <Setter Property="Height" Value="5" /><Setter Property="Foreground" Value="{StaticResource PrimaryBrush}" />
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ProgressBar">

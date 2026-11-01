@@ -14,14 +14,36 @@ public sealed class BackupService
 
     private readonly Func<string, string, WebDavClient> _webDavFactory;
     private readonly string? _snapshotRoot;
+    private readonly SyncBaselineStore? _baselines;
 
     /// <param name="snapshotRoot">Where the local save is kept before a restore overwrites it; null disables snapshots.</param>
-    public BackupService(Func<string, string, WebDavClient>? webDavFactory = null, string? snapshotRoot = null)
+    /// <param name="baselines">Where each backup or restore notes what this PC and the cloud now share; null disables conflict detection.</param>
+    public BackupService(Func<string, string, WebDavClient>? webDavFactory = null, string? snapshotRoot = null,
+        SyncBaselineStore? baselines = null)
     {
         _webDavFactory = webDavFactory
             ?? ((url, password) => new WebDavClient(url, "", password));
         _snapshotRoot = snapshotRoot;
+        _baselines = baselines;
     }
+
+    /// <summary>What this PC last had in common with the cloud, per game; null when that isn't tracked.</summary>
+    public SyncBaselineStore? Baselines => _baselines;
+
+    /// <summary>
+    /// True when the local save and the cloud's newest backup both changed since this PC last synced the game,
+    /// so neither may simply replace the other. False when that can't be told (the game was never synced here).
+    /// </summary>
+    public bool ChangedOnBothSides(GameConfig game, long localMTime, long cloudMTime)
+    {
+        var baseline = _baselines?.Get(game.Name) ?? 0;
+        return baseline > 0
+               && localMTime - baseline > Constants.SyncThresholdSeconds
+               && cloudMTime - baseline > Constants.SyncThresholdSeconds;
+    }
+
+    /// <summary>Notes that the local save and the cloud hold the same save, whose newest file is from <paramref name="mtime"/>.</summary>
+    public void RememberSynced(GameConfig game, long mtime) => _baselines?.Set(game.Name, mtime);
 
     // ---------------- Backup ----------------
 
@@ -93,6 +115,8 @@ public sealed class BackupService
         // An upload can take minutes, so WebDAV reads from a private copy: the game's own files
         // are only read for the length of one local copy and never held open during the upload.
         string? snapshot = null;
+        // The newest file time in what was published, which this PC and the cloud now have in common.
+        long publishedMTime = 0;
         try
         {
             if (toWebDav)
@@ -102,6 +126,7 @@ public sealed class BackupService
                 {
                     if (!await FileUtil.CopyDirectoryConsistentAsync(game.Save, snapshot, ct))
                         log(Localization.T("Log.BackupUnstable", game.Name));
+                    publishedMTime = FileUtil.GetLatestMTime(snapshot);
                 }
                 catch (Exception ex) when (!IsCancelled(ex, ct))
                 {
@@ -119,7 +144,9 @@ public sealed class BackupService
             {
                 try
                 {
-                    await PublishToOneDriveAsync(game, config.CloudRoot, snapshot, timestamp, log, ct);
+                    var published = await PublishToOneDriveAsync(game, config.CloudRoot, snapshot, timestamp, log, ct);
+                    if (publishedMTime == 0)
+                        publishedMTime = FileUtil.GetLatestMTime(published);
                     result.Succeeded.Add(Constants.TargetOneDrive);
                 }
                 catch (Exception ex) when (!IsCancelled(ex, ct))
@@ -182,7 +209,10 @@ public sealed class BackupService
         }
 
         if (result.Succeeded.Count > 0)
+        {
+            RememberSynced(game, publishedMTime);
             log(Localization.T("Log.BackupSucceeded", game.Name, string.Join(", ", result.Succeeded)));
+        }
         return result;
     }
 
@@ -190,7 +220,8 @@ public sealed class BackupService
     private static bool IsCancelled(Exception ex, CancellationToken ct) =>
         ex is OperationCanceledException && ct.IsCancellationRequested;
 
-    private static async Task PublishToOneDriveAsync(GameConfig game, string cloudRoot, string? snapshot,
+    /// <returns>The folder holding the published backup.</returns>
+    private static async Task<string> PublishToOneDriveAsync(GameConfig game, string cloudRoot, string? snapshot,
         string timestamp, Action<string> log, CancellationToken ct)
     {
         var gameCloudDir = Path.Combine(cloudRoot, game.Name);
@@ -208,7 +239,9 @@ public sealed class BackupService
                 await FileUtil.CopyDirectoryAsync(snapshot, incomplete, ct);
             else if (!await FileUtil.CopyDirectoryConsistentAsync(game.Save, incomplete, ct))
                 log(Localization.T("Log.BackupUnstable", game.Name));
-            Directory.Move(incomplete, Path.Combine(gameCloudDir, finalName));
+            var published = Path.Combine(gameCloudDir, finalName);
+            Directory.Move(incomplete, published);
+            return published;
         }
         catch
         {
@@ -283,6 +316,7 @@ public sealed class BackupService
         var backupPath = Path.Combine(config.CloudRoot, game.Name, backupName);
         await RestoreWithSnapshotAsync(game, config.CloudRoot, log, () => FileUtil.RestoreDirectoryAsync(game.Save,
             staging => FileUtil.CopyDirectoryAsync(backupPath, staging, ct), ct), ct);
+        RememberRestored(game);
         log(Localization.T("Log.RestoreOdDone", game.Name, backupName));
     }
 
@@ -305,9 +339,13 @@ public sealed class BackupService
                 throw new InvalidOperationException(Localization.T("Log.RestoreWdEmpty", remoteDir));
             FileUtil.ApplyBackupMTime(backupName, staging);
         }, ct), ct);
+        RememberRestored(game);
         log(Localization.T("Log.RestoreWdDone", count));
         log(Localization.T("Log.RestoreWdDoneFull", game.Name, backupName));
     }
+
+    // The save now is that backup (copies keep file times), so both sides are in sync again.
+    private void RememberRestored(GameConfig game) => RememberSynced(game, FileUtil.GetLatestMTime(game.Save));
 
     // ---------------- Pre-restore snapshots ----------------
 
@@ -373,6 +411,9 @@ public sealed class BackupService
         catch (Exception ex)
         {
             try { FileUtil.DeleteDirectorySafe(path); } catch { /* best effort */ }
+            // Cancelled by the user: nothing failed, and the caller has to be able to tell.
+            if (IsCancelled(ex, ct))
+                throw;
             throw new IOException(Localization.T("Err.SnapshotFailed", ex.Message), ex);
         }
     }
@@ -578,12 +619,12 @@ public sealed class BackupService
         if (game.Paused)
             return new SyncStatus(Localization.T("Status.Paused"), SyncStatusKind.Paused);
         if (game.BackupMethods.Count == 0)
-            return new SyncStatus(Localization.T("Status.NoMethods"), SyncStatusKind.None);
+            return new SyncStatus(Localization.T("Status.NoMethods"), SyncStatusKind.NotConfigured);
 
         var hasOneDrive = game.HasMethod(Constants.MethodOneDrive) && !string.IsNullOrEmpty(config.CloudRoot);
         var hasWebDav = game.HasMethod(Constants.MethodWebDav) && !string.IsNullOrEmpty(config.WebDavUrl);
         if (!hasOneDrive && !hasWebDav)
-            return new SyncStatus(Localization.T("Status.NoTarget"), SyncStatusKind.None);
+            return new SyncStatus(Localization.T("Status.NoTarget"), SyncStatusKind.NotConfigured);
 
         // Whatever makes every backup fail comes first: nothing else about the game means much until it is fixed.
         var pathError = SavePathPolicy.Validate(game.Save, game.Name, hasOneDrive ? config.CloudRoot : "");
@@ -649,7 +690,7 @@ public sealed class BackupService
         }
 
         if (hasWebDav && !checkWebDav && odCloudTime == 0)
-            return new SyncStatus(Localization.T("Status.WebDavUnchecked"), SyncStatusKind.None, lastBackup);
+            return new SyncStatus(Localization.T("Status.WebDavUnchecked"), SyncStatusKind.Unknown, lastBackup);
 
         long cloudTime;
         if (odCloudTime > 0)
@@ -660,11 +701,16 @@ public sealed class BackupService
             cloudTime = wdDirTs;
 
         if (localTime == 0 && cloudTime == 0)
-            return new SyncStatus(Localization.T("Status.NoSaves"), SyncStatusKind.None, lastBackup);
+            return new SyncStatus(Localization.T("Status.NoSaves"), SyncStatusKind.NoSaves, lastBackup);
         if (cloudTime == 0)
             return new SyncStatus(Localization.T("Status.WaitingFirst"), SyncStatusKind.LocalNew, lastBackup);
         if (localTime == 0)
             return new SyncStatus(Localization.T("Status.LocalEmpty"), SyncStatusKind.CloudNew, lastBackup);
+        // Only a real save time can tell that the cloud changed; the time a backup was uploaded can't.
+        var cloudSaveTime = odCloudTime > 0 ? odCloudTime : wdBackupMTime;
+        if (cloudSaveTime > 0 && ChangedOnBothSides(game, localTime, cloudSaveTime))
+            return new SyncStatus(Localization.T("Status.Conflict"), SyncStatusKind.Conflict, lastBackup,
+                Localization.T("Status.ConflictDetail", RelativeTime.FormatUnix(_baselines!.Get(game.Name))));
         if (localTime - cloudTime > Constants.SyncThresholdSeconds)
             return new SyncStatus(Localization.T("Status.LocalNew"), SyncStatusKind.LocalNew, lastBackup);
         if ((odCloudTime > 0 || wdBackupMTime > 0) &&

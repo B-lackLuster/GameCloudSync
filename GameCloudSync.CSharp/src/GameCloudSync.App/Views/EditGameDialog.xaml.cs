@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Controls;
 using GameCloudSync.App.ViewModels;
 using GameCloudSync.Core;
 using GameCloudSync.Core.Models;
@@ -35,10 +36,14 @@ public partial class EditGameDialog : Window
             SaveBox.Text = dialog.FolderName;
     }
 
+    private void OnNameChanged(object sender, TextChangedEventArgs e) =>
+        GameNameFeedback.Show(NameError, NameBox.Text, _games, self: _game);
+
     private void OnSave(object sender, RoutedEventArgs e)
     {
         var name = NameBox.Text.Trim();
-        var save = SaveBox.Text.Trim();
+        // "%APPDATA%\Game\Saves" works as well as the full path.
+        var save = FileUtil.ExpandSavePath(SaveBox.Text.Trim());
         if (name.Length == 0 || save.Length == 0)
         {
             MessageBox.Show(this, Localization.T("Edit.FillRequired"), Localization.T("Common.Error"),

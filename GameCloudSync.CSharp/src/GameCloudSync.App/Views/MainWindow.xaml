@@ -130,7 +130,7 @@
                 </StackPanel>
             </Grid>
             <Grid Grid.Column="1" Grid.Row="1" Margin="28,8,30,28">
-                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                 <Grid Margin="0,0,0,26">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                     <StackPanel Margin="0,0,18,0">
@@ -142,7 +142,17 @@
                         <Button x:Name="MoreButton" Content="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="18" Style="{StaticResource QuietButton}" Click="OnOpenMoreMenu" ToolTip="{Binding [Shell.DataTools], Source={x:Static loc:Localization.Instance}}" AutomationProperties.Name="{Binding [Shell.DataTools], Source={x:Static loc:Localization.Instance}}" />
                     </StackPanel>
                 </Grid>
-                <Grid Grid.Row="1">
+                <!-- A job the user started: which game it is on, a moving bar (no byte counts) and a way to stop it. -->
+                <Border Grid.Row="1" Background="{StaticResource PrimarySoftBrush}" CornerRadius="10" Padding="14,6,6,6" Margin="0,-12,0,16"
+                        Visibility="{Binding IsBusy, Converter={x:Static vm:Converters.BoolToVisibility}}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <ProgressBar Style="{StaticResource BusyProgress}" Width="120" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{Binding BusyText}" FontSize="13" Margin="14,0,12,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding BusyText}" />
+                        <Button Grid.Column="2" Content="{Binding [Common.Cancel], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}" MinHeight="30" Padding="16,4" Click="OnCancelBusy" IsEnabled="{Binding CanCancelBusy}" />
+                    </Grid>
+                </Border>
+                <Grid Grid.Row="2">
                     <!-- OVERVIEW: every figure comes from the actual game collection. -->
                     <ScrollViewer x:Name="OverviewScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" SizeChanged="OnOverviewSizeChanged" Visibility="{Binding Dashboard.IsOverview, Converter={x:Static vm:Converters.BoolToVisibility}}">
                         <StackPanel Margin="0,0,4,0">
@@ -166,7 +176,7 @@
                                         <TextBlock Text="{Binding [Shell.Engine], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource TextSecBrush}" />
                                         <Ellipse Width="8" Height="8" Fill="{Binding MonitorStateBrush}" HorizontalAlignment="Right" VerticalAlignment="Center" />
                                         <StackPanel Grid.Row="1" Margin="0,14,0,0"><TextBlock Text="{Binding Dashboard.EngineState}" FontSize="31" FontWeight="SemiBold" /><TextBlock Text="{Binding [Shell.MonitorHint], Source={x:Static loc:Localization.Instance}}" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" TextWrapping="Wrap" /></StackPanel>
-                                        <Button Grid.Row="2" Content="{Binding MonitorButtonText}" Style="{StaticResource QuietButton}" Foreground="{StaticResource PrimaryBrush}" Padding="0,5" HorizontalAlignment="Left" Click="OnToggleMonitoring" />
+                                        <Button Grid.Row="2" Content="{Binding MonitorButtonText}" Style="{StaticResource QuietButton}" Foreground="{StaticResource PrimaryBrush}" Padding="0,5" HorizontalAlignment="Left" Click="OnToggleMonitoring" IsEnabled="{Binding CanAct}" />
                                     </Grid>
                                 </Border>
                                 <Border Style="{StaticResource DashboardCard}" Margin="8,0,8,16" Height="208">
@@ -199,7 +209,7 @@
                                         <StackPanel Grid.Row="1" Margin="0,12,0,10">
                                             <TextBlock Text="{Binding Dashboard.SyncCaption}" FontSize="23" FontWeight="SemiBold" />
                                             <ProgressBar Value="{Binding Dashboard.SyncPercent, Mode=OneWay}" Maximum="100" Style="{StaticResource SyncProgress}" Margin="0,15,0,0" />
-                                            <TextBlock Text="{Binding Dashboard.PausedCaption}" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,9,0,0" />
+                                            <TextBlock Text="{Binding Dashboard.PausedCaption}" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,9,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding Dashboard.PausedCaption}" />
                                         </StackPanel>
                                         <UniformGrid Grid.Row="2" Columns="3">
                                             <StackPanel><TextBlock Text="{Binding Dashboard.SyncedCount}" FontSize="24" Foreground="#6BE0B4" /><TextBlock Text="{Binding [Shell.Synced], Source={x:Static loc:Localization.Instance}}" FontSize="11" Foreground="{StaticResource MutedBrush}" /></StackPanel>
@@ -263,7 +273,7 @@
                                    Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
-                <Button Style="{StaticResource AccentButton}" Click="OnToggleMonitoring" Margin="0,0,8,0">
+                <Button Style="{StaticResource AccentButton}" Click="OnToggleMonitoring" IsEnabled="{Binding CanAct}" Margin="0,0,8,0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center">
                             <TextBlock.Style>
@@ -281,7 +291,7 @@
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource SecondaryButton}" Click="OnForceBackup"
-                        IsEnabled="{Binding CanAct}" Margin="0,0,8,0">
+                        IsEnabled="{Binding CanUseSelection}" Margin="0,0,8,0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xE898;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                    VerticalAlignment="Center" />
@@ -290,7 +300,7 @@
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource SecondaryButton}" Click="OnRestore"
-                        IsEnabled="{Binding CanAct}" Margin="0,0,8,0">
+                        IsEnabled="{Binding CanUseSelection}" Margin="0,0,8,0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                    VerticalAlignment="Center" />
@@ -319,7 +329,8 @@
                 </Grid>
             </StackPanel>
             <Grid Grid.Row="3">
-                <ListBox x:Name="GameList" ItemsSource="{Binding Games}" ItemTemplate="{StaticResource GameCardTemplate}" SelectionMode="Extended" SelectionChanged="OnSelectionChanged" PreviewMouseRightButtonDown="OnListRightClick" IsEnabled="{Binding CanAct}" />
+                <!-- Stays usable while a job runs (the busy bar above says what it is doing); the actions themselves wait. -->
+                <ListBox x:Name="GameList" ItemsSource="{Binding Games}" ItemTemplate="{StaticResource GameCardTemplate}" SelectionMode="Extended" SelectionChanged="OnSelectionChanged" PreviewMouseRightButtonDown="OnListRightClick" />
                 <Border Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="14">
                     <Border.Style>
                         <Style TargetType="Border">

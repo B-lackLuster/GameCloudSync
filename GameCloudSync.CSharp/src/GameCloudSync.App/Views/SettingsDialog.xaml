@@ -28,12 +28,16 @@
                                 <ColumnDefinition Width="104" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="{Binding [Set.CloudRoot], Source={x:Static loc:Localization.Instance}}" VerticalAlignment="Center" />
                             <TextBox x:Name="CloudRootBox" Grid.Column="1" Margin="0,0,8,0" />
                             <Button Grid.Column="2" Content="{Binding [Btn.Browse], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}"
-                                    Click="OnBrowseCloudRoot" />
+                                    Click="OnBrowseCloudRoot" Margin="0,0,8,0" />
+                            <Button Grid.Column="3" Content="{Binding [Btn.DetectOneDrive], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}"
+                                    Click="OnDetectOneDrive" />
                         </Grid>
+                        <TextBlock x:Name="CloudRootHint" Margin="104,8,0,0" FontSize="11.5" Foreground="{StaticResource TextSecBrush}" Visibility="Collapsed" />
                     </StackPanel>
                 </Border>
 
@@ -140,7 +144,10 @@
                         </Grid>
                         <CheckBox x:Name="AutostartCheck" Content="{Binding [Set.Autostart], Source={x:Static loc:Localization.Instance}}" Margin="0,0,0,8" />
                         <CheckBox x:Name="BackgroundCheck" Content="{Binding [Set.Background], Source={x:Static loc:Localization.Instance}}" Margin="0,0,0,8" />
-                        <CheckBox x:Name="AutoSyncCheck" Content="{Binding [Set.AutoSync], Source={x:Static loc:Localization.Instance}}" Margin="0,0,0,8" />
+                        <CheckBox x:Name="AutoSyncCheck" Content="{Binding [Set.AutoSync], Source={x:Static loc:Localization.Instance}}" Margin="0,0,0,4" />
+                        <!-- "Download" alone hides that the local save gets replaced without a question. -->
+                        <TextBlock Text="{Binding [Set.AutoSyncWarn], Source={x:Static loc:Localization.Instance}}" Margin="26,0,0,10"
+                                   FontSize="11.5" Foreground="#F1CB8D" />
                         <CheckBox x:Name="AutoConfigCheck" Content="{Binding [Set.AutoConfig], Source={x:Static loc:Localization.Instance}}" Margin="0,0,0,8" />
                         <CheckBox x:Name="DebugCheck" Content="{Binding [Set.DebugWebDav], Source={x:Static loc:Localization.Instance}}" />
                     </StackPanel>

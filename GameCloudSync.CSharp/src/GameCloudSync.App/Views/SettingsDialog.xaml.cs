@@ -44,6 +44,10 @@ public partial class SettingsDialog : Window
 
         LanguageBox.ItemsSource = new[] { "中文", "English" };
         LanguageBox.SelectedIndex = Localization.Instance.Language == Localization.English ? 1 : 0;
+
+        // Only pointed out, not filled in: someone backing up to WebDAV alone wants the box left empty.
+        if (vm.Config.CloudRoot.Length == 0 && OneDriveLocator.FindRoots() is [var found, ..])
+            ShowCloudRootHint(Localization.T("Set.OneDriveDetectedHint", found));
     }
 
     private void OnBrowseCloudRoot(object sender, RoutedEventArgs e)
@@ -51,6 +55,27 @@ public partial class SettingsDialog : Window
         var dialog = new OpenFolderDialog { Title = Localization.T("Set.PickOneDrive") };
         if (dialog.ShowDialog(this) == true)
             CloudRootBox.Text = dialog.FolderName;
+    }
+
+    private void OnDetectOneDrive(object sender, RoutedEventArgs e)
+    {
+        var roots = OneDriveLocator.FindRoots();
+        if (roots.Count == 0)
+        {
+            ShowCloudRootHint(Localization.T("Set.OneDriveNotFound"));
+            return;
+        }
+        // Backups get a folder of their own instead of one folder per game in the OneDrive root.
+        var suggestion = OneDriveLocator.SuggestBackupRoot(roots[0]);
+        CloudRootBox.Text = suggestion;
+        ShowCloudRootHint(Localization.T(Directory.Exists(suggestion) ? "Set.OneDriveFound" : "Set.OneDriveFoundNew",
+            roots[0], Constants.AppFolderName));
+    }
+
+    private void ShowCloudRootHint(string text)
+    {
+        CloudRootHint.Text = text;
+        CloudRootHint.Visibility = Visibility.Visible;
     }
 
     private async void OnTestWebDav(object sender, RoutedEventArgs e)
@@ -175,7 +200,8 @@ public partial class SettingsDialog : Window
 
     /// <summary>
     /// A game whose save folder is (or contains) the new backup folder would trigger a backup with every backup.
-    /// A folder that doesn't exist makes every backup fail, which is allowed only if the user insists.
+    /// A missing folder inside one that exists (the suggested OneDrive subfolder) is created; one whose parent
+    /// is missing too (an unplugged drive, OneDrive not set up) makes every backup fail, which needs the user's word.
     /// </summary>
     private bool CheckNewCloudRoot(string cloudRoot)
     {
@@ -191,8 +217,24 @@ public partial class SettingsDialog : Window
             CloudRootBox.Focus();
             return false;
         }
-        return Directory.Exists(cloudRoot)
-               || MessageBox.Show(this, Localization.T("Set.CloudRootMissing", cloudRoot), Localization.T("Common.Warning"),
+        if (Directory.Exists(cloudRoot))
+            return true;
+        if (Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(cloudRoot)) is { } parent && Directory.Exists(parent))
+        {
+            try
+            {
+                Directory.CreateDirectory(cloudRoot);
+                _vm.AppendLog(Localization.T("Set.CloudRootCreated", cloudRoot));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, Localization.T("Set.CloudRootCreateFailed", cloudRoot, ex.Message),
+                    Localization.T("Common.Error"), MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+        }
+        return MessageBox.Show(this, Localization.T("Set.CloudRootMissing", cloudRoot), Localization.T("Common.Warning"),
                    MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
     }
 

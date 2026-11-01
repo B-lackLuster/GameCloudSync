@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using GameCloudSync.App.ViewModels;
@@ -25,6 +26,17 @@ public partial class HistoryWindow : Window
         _game = game;
         DataContext = this;
         HeaderText = Localization.T("Hist.Title", game.Name);
+        // Restore and delete work on one source; a selection left behind on the hidden tab used to win silently.
+        OneDriveList.SelectionChanged += (_, e) =>
+        {
+            if (e.AddedItems.Count > 0)
+                WebDavList.UnselectAll();
+        };
+        WebDavList.SelectionChanged += (_, e) =>
+        {
+            if (e.AddedItems.Count > 0)
+                OneDriveList.UnselectAll();
+        };
         Loaded += async (_, _) => await LoadAsync();
     }
 
@@ -50,31 +62,36 @@ public partial class HistoryWindow : Window
         OnPropertyChanged(nameof(WebDavCount));
     }
 
-    private List<HistoryItem> CurrentSelection()
-    {
-        return OneDriveList.SelectedItems.OfType<HistoryItem>().ToList();
-    }
-
     private async void OnRestore(object sender, RoutedEventArgs e)
     {
-        var odSelected = OneDriveList.SelectedItems.OfType<HistoryItem>().ToList();
-        var wdSelected = WebDavList.SelectedItems.OfType<HistoryItem>().ToList();
-        var selected = odSelected.Count > 0 ? odSelected : wdSelected;
-        if (selected.Count == 0)
+        // This window stays open beside the main one; two restores of one save must never run at once.
+        if (!_vm.CanAct)
+        {
+            MessageBox.Show(this, Localization.T("Main.Busy"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var webDav = WebDavList.SelectedItems.Count > 0;
+        if ((webDav ? WebDavList : OneDriveList).SelectedItem is not HistoryItem item)
         {
             MessageBox.Show(this, Localization.T("Hist.SelectFirst"), Localization.T("Common.Info"),
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        var item = selected[0];
-        if (MessageBox.Show(this, Localization.T("Hist.RestoreConfirm", item.Name),
-                Localization.T("Common.Confirm"), MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+        // The same question as a download from the main window: both times, and which one is newer.
+        var source = webDav
+            ? new BackupSource($"WebDAV · {item.Name}", Constants.MethodWebDav, item.Name)
+            : new BackupSource($"OneDrive · {item.Name}", Constants.MethodOneDrive,
+                Path.Combine(_vm.Config.CloudRoot, _game.Game.Name, item.Name));
+        if (MessageBox.Show(this, _vm.RestoreConfirmMessage(_game, source), Localization.T("Msg.RestoreConfirmTitle"),
+                MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
         {
             return;
         }
         try
         {
-            await _vm.RestoreFromHistoryAsync(_game, item.Name, webDav: wdSelected.Count > 0);
+            if (!await _vm.RestoreFromHistoryAsync(_game, item.Name, webDav))
+                return;
             MessageBox.Show(this, Localization.T("Hist.RestoreSuccess", _game.Name, item.Name), Localization.T("Common.Success"),
                 MessageBoxButton.OK, MessageBoxImage.Information);
             Close();
@@ -117,6 +134,8 @@ public partial class HistoryWindow : Window
             return;
         }
         await LoadAsync();
+        // The newest backup may be gone, which changes the game's status in the main window.
+        _ = _vm.RefreshGamesAsync();
     }
 
     private async void OnDownload(object sender, RoutedEventArgs e)

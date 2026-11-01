@@ -5,11 +5,36 @@ namespace GameCloudSync.Core.Tests;
 public class FileUtilTests
 {
     [Fact]
-    public void FixSavePath_ReplacesOldUser()
+    public void FixSavePath_ReplacesOldUserWithThisProfile()
     {
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
         var fixedPath = FileUtil.FixSavePath(@"C:\Users\olduser\Documents\My Games\EldenRing");
-        var currentUser = Environment.GetEnvironmentVariable("USERNAME");
-        Assert.StartsWith($@"C:\Users\{currentUser}\", fixedPath);
+
+        Assert.Equal(Path.Combine(profile, "Documents", "My Games", "EldenRing"), fixedPath);
+    }
+
+    [Fact]
+    public void FixSavePath_ExpandsAppDataStyleVariables()
+    {
+        var appData = Environment.GetEnvironmentVariable("APPDATA")!;
+
+        Assert.Equal(Path.Combine(appData, "Game", "Saves"), FileUtil.FixSavePath(@"%APPDATA%\Game\Saves"));
+    }
+
+    [Fact]
+    public void FixSavePath_LeavesProfilesEveryUserSharesAlone()
+    {
+        Assert.Equal(@"C:\Users\Public\Documents\Game", FileUtil.FixSavePath(@"C:\Users\Public\Documents\Game"));
+        Assert.Equal(@"D:\Users\someone\Saves", FileUtil.FixSavePath(@"D:\Users\someone\Saves"));
+    }
+
+    [Fact]
+    public void ExpandSavePath_LeavesPlainPathsAndUnknownVariablesAlone()
+    {
+        Assert.Equal(@"D:\Games\Saves", FileUtil.ExpandSavePath(@"D:\Games\Saves"));
+        Assert.Equal(@"%GCS_NO_SUCH_VARIABLE%\Saves", FileUtil.ExpandSavePath(@"%GCS_NO_SUCH_VARIABLE%\Saves"));
+        Assert.Equal("", FileUtil.ExpandSavePath(""));
     }
 
     [Fact]

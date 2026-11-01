@@ -10,6 +10,11 @@ using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App.ViewModels;
 
+public enum ConflictChoice { Skip, KeepLocal, UseCloud }
+
+/// <summary>A save that changed on this PC and in the cloud since the two were last in sync here.</summary>
+public sealed record SyncConflict(GameConfig Game, long LocalMTime, long CloudMTime, long BaselineMTime, BackupSource Source);
+
 public sealed class MainViewModel : ObservableObject
 {
     private readonly ConfigStore _configStore;
@@ -24,6 +29,10 @@ public sealed class MainViewModel : ObservableObject
     private string _webDavPassword = "";
     private List<GameItemViewModel> _selectedGames = new();
     private bool _isBusy;
+    private int _busyDepth;
+    private string _busyText = "";
+    private CancellationTokenSource? _busyCts;
+    private int _refreshGeneration;
     private bool _hasPendingCloudUpdate;
     private List<GameConfig> _pendingCloudGames = new();
     private string _pendingCloudSource = "";
@@ -57,7 +66,7 @@ public sealed class MainViewModel : ObservableObject
             _monitoredCount = _monitoring.MonitoredCount;
             OnPropertyChanged(nameof(MonitorStateText));
         });
-        _monitoring.BackupFinished += () => RunOnUi(() => _ = RefreshGamesAsync(checkWebDav: HasWebDavGames));
+        _monitoring.BackupFinished += () => RunOnUi(() => _ = RefreshGamesAsync());
         _monitoring.BackupAttempted += attempt => RunOnUi(() => OnBackupAttempted(attempt));
         Localization.Instance.LanguageChanged += () => RunOnUi(() =>
         {
@@ -91,23 +100,80 @@ public sealed class MainViewModel : ObservableObject
         private set
         {
             if (SetProperty(ref _isBusy, value))
+            {
                 OnPropertyChanged(nameof(CanAct));
+                OnPropertyChanged(nameof(CanUseSelection));
+            }
         }
     }
 
     public bool CanAct => !IsBusy;
 
-    public async Task RunBusyAsync(Func<Task> work)
+    /// <summary>What the running job is doing right now, shown beside its progress bar.</summary>
+    public string BusyText
     {
-        IsBusy = true;
+        get => _busyText;
+        private set => SetProperty(ref _busyText, value);
+    }
+
+    public bool CanCancelBusy => _busyCts is { IsCancellationRequested: false };
+
+    /// <summary>
+    /// Stops the running job at the next safe point: a backup leaves no half-written copy behind, and a
+    /// restore that hasn't replaced the save yet leaves it untouched.
+    /// </summary>
+    public void CancelBusy()
+    {
+        if (_busyCts is not { IsCancellationRequested: false } cts)
+            return;
+        cts.Cancel();
+        BusyText = Localization.T("Busy.Cancelling");
+        OnPropertyChanged(nameof(CanCancelBusy));
+    }
+
+    /// <summary>Runs a job the user started; the window shows <paramref name="text"/> and a cancel button until it ends.</summary>
+    public async Task RunBusyAsync(string text, Func<CancellationToken, Task> work)
+    {
+        var ct = BeginBusy(text);
         try
         {
-            await work();
+            await work(ct);
         }
         finally
         {
-            IsBusy = false;
+            EndBusy();
         }
+    }
+
+    // Jobs may overlap (the history window works beside the main window); the bar stays until the last one ends.
+    private CancellationToken BeginBusy(string text)
+    {
+        if (_busyDepth++ == 0)
+        {
+            _busyCts = new CancellationTokenSource();
+            IsBusy = true;
+        }
+        BusyText = text;
+        OnPropertyChanged(nameof(CanCancelBusy));
+        return _busyCts!.Token;
+    }
+
+    private void SetBusyProgress(string text, CancellationToken ct)
+    {
+        // "Cancelling…" stays up once asked for.
+        if (!ct.IsCancellationRequested)
+            BusyText = text;
+    }
+
+    private void EndBusy()
+    {
+        if (--_busyDepth > 0)
+            return;
+        IsBusy = false;
+        BusyText = "";
+        _busyCts?.Dispose();
+        _busyCts = null;
+        OnPropertyChanged(nameof(CanCancelBusy));
     }
 
     public string GameCountText => Localization.T("Main.GameCount", Games.Count);
@@ -171,9 +237,16 @@ public sealed class MainViewModel : ObservableObject
 
     public IReadOnlyList<GameItemViewModel> SelectedGames => _selectedGames;
 
+    public bool HasSelection => _selectedGames.Count > 0;
+
+    /// <summary>Upload and download need a selected game and no other job running.</summary>
+    public bool CanUseSelection => CanAct && HasSelection;
+
     public void SetSelection(IList selected)
     {
         _selectedGames = selected.OfType<GameItemViewModel>().ToList();
+        OnPropertyChanged(nameof(HasSelection));
+        OnPropertyChanged(nameof(CanUseSelection));
     }
 
     public void SetWebDavPassword(string password)
@@ -188,7 +261,8 @@ public sealed class MainViewModel : ObservableObject
         foreach (var game in _config.Games)
             Games.Add(new GameItemViewModel(game));
         AppendLog(Localization.T("Log.Welcome", Games.Count));
-        _ = RefreshGamesAsync();
+        // The local side shows at once; the WebDAV side follows when the server has answered.
+        _ = RefreshGamesAsync(checkWebDav: false);
         if (_config.WebDavUrl.Length > 0)
             _ = Task.Run(CheckWebDavAsync);
     }
@@ -255,16 +329,26 @@ public sealed class MainViewModel : ObservableObject
     private bool HasWebDavGames =>
         !string.IsNullOrEmpty(_config.WebDavUrl) && Games.Any(g => g.IsWebDav && !g.IsPaused);
 
+    /// <param name="checkWebDav">
+    /// Whether to ask the WebDAV server too. By default it is asked whenever a game uses it, so a game
+    /// backed up only to WebDAV never falls back to "not checked" after an ordinary refresh.
+    /// </param>
     /// <param name="probe">The answer of an earlier <see cref="BackupService.ProbeWebDavAsync"/>, so the server isn't asked again.</param>
-    public async Task RefreshGamesAsync(bool checkWebDav = false, WebDavProbe? probe = null)
+    public async Task RefreshGamesAsync(bool? checkWebDav = null, WebDavProbe? probe = null)
     {
+        // A later refresh can overtake this one while the server is slow; then its newer answer must stand.
+        var generation = ++_refreshGeneration;
+        var withWebDav = checkWebDav ?? HasWebDavGames;
         // One question to the server covers every game; asking per game would repeat the same failure N times.
-        if (checkWebDav && probe is null && HasWebDavGames)
+        if (withWebDav && probe is null && HasWebDavGames)
             probe = await _backupService.ProbeWebDavAsync(_config, _webDavPassword);
         foreach (var item in Games.ToList())
         {
-            item.Status = await _backupService.GetSyncStatusAsync(
-                item.Game, _config, _webDavPassword, checkWebDav, webDavProbe: probe);
+            var status = await _backupService.GetSyncStatusAsync(
+                item.Game, _config, _webDavPassword, withWebDav, webDavProbe: probe);
+            if (generation != _refreshGeneration)
+                return;
+            item.Status = status;
         }
     }
 
@@ -277,32 +361,52 @@ public sealed class MainViewModel : ObservableObject
 
     // ---------------- Backup / restore ----------------
 
-    /// <returns>One line per game that could not be backed up, with the reason; empty when all went well.</returns>
-    public async Task<List<string>> ForceBackupAsync()
+    /// <returns>
+    /// One line per game that could not be backed up, with the reason (empty when all went well), and
+    /// whether the user cancelled before every game was done.
+    /// </returns>
+    public async Task<(List<string> Failures, bool Cancelled)> ForceBackupAsync(IReadOnlyList<GameItemViewModel> items)
     {
         var failures = new List<string>();
-        var selected = _selectedGames
-            .Where(g => g.Game.BackupMethods.Count > 0 && Directory.Exists(g.Game.Save))
-            .ToList();
+        var cancelled = false;
+        var selected = items.Where(g => g.Game.BackupMethods.Count > 0).ToList();
         if (selected.Count == 0)
-            return failures;
-        IsBusy = true;
+            return (failures, cancelled);
+        var ct = BeginBusy(Localization.T("Main.Busy"));
         try
         {
-            foreach (var item in selected)
+            for (var i = 0; i < selected.Count; i++)
             {
-                var result = await _backupService.RunBackupAsync(item.Game, _config, _webDavPassword, AppendLog);
-                item.SetLastFailure(result.HasFailures ? result.FailureSummary : null);
-                if (result.HasFailures)
-                    failures.Add($"{item.Name}: {result.FailureSummary}");
+                var item = selected[i];
+                if (ct.IsCancellationRequested)
+                {
+                    cancelled = true;
+                    break;
+                }
+                SetBusyProgress(Localization.T("Busy.Uploading", item.Name, i + 1, selected.Count), ct);
+                try
+                {
+                    // Copying and fingerprinting a big save takes a while; the window keeps drawing meanwhile.
+                    var result = await Task.Run(() =>
+                        _backupService.RunBackupAsync(item.Game, _config, _webDavPassword, AppendLog, ct: ct), ct);
+                    item.SetLastFailure(result.HasFailures ? result.FailureSummary : null);
+                    if (result.HasFailures)
+                        failures.Add($"{item.Name}: {result.FailureSummary}");
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    cancelled = true;
+                    AppendLog(Localization.T("Log.UploadCancelled", item.Name));
+                    break;
+                }
             }
         }
         finally
         {
-            IsBusy = false;
-            await RefreshGamesAsync(checkWebDav: HasWebDavGames);
+            EndBusy();
+            await RefreshGamesAsync();
         }
-        return failures;
+        return (failures, cancelled);
     }
 
     /// <summary>Backs up a game that was just added, without holding anything up; failures are shown like any other.</summary>
@@ -315,7 +419,7 @@ public sealed class MainViewModel : ObservableObject
             item?.SetLastFailure(result.HasFailures ? result.FailureSummary : null);
             if (result.HasFailures)
                 RaiseFailureNotice(game.Name, result.FailureSummary);
-            _ = RefreshGamesAsync(checkWebDav: HasWebDavGames);
+            _ = RefreshGamesAsync();
         });
     }
 
@@ -354,51 +458,111 @@ public sealed class MainViewModel : ObservableObject
         return sources;
     }
 
-    public async Task RestoreFromSourceAsync(GameItemViewModel item, BackupSource source)
+    /// <summary>The question asked before a backup overwrites the local save: both times, and which side is newer.</summary>
+    public string RestoreConfirmMessage(GameItemViewModel item, BackupSource source)
     {
-        IsBusy = true;
+        var localTs = FileUtil.GetLatestMTime(item.Game.Save);
+        var cloudTs = BackupService.GetBackupMTime(source);
+        var localStr = localTs > 0 ? RelativeTime.FormatUnix(localTs) : Localization.T("Msg.RestoreNoLocal");
+        var cloudStr = cloudTs > 0 ? RelativeTime.FormatUnix(cloudTs) : Localization.T("Msg.RestoreUnknown");
+        var headline = localTs == 0
+            ? Localization.T("Msg.RestoreConfirmLocalEmpty")
+            : _backupService.ChangedOnBothSides(item.Game, localTs, cloudTs)
+                ? Localization.T("Msg.RestoreConfirmConflict")
+                : cloudTs > localTs
+                    ? Localization.T("Msg.RestoreConfirmCloudNew")
+                    : Localization.T("Msg.RestoreConfirmLocalNew");
+        return $"{headline}\n{Localization.T("Msg.RestoreSource", source.Label)}\n" +
+               $"{Localization.T("Msg.RestoreCloudTime", cloudStr)}\n" +
+               $"{Localization.T("Msg.RestoreLocalTime", localStr)}\n\n" +
+               Localization.T("Msg.RestoreAsk");
+    }
+
+    private Task RestoreCoreAsync(GameConfig game, BackupSource source, CancellationToken ct) =>
+        source.Method == Constants.MethodOneDrive
+            ? _backupService.RestoreFromOneDriveAsync(game, Path.GetFileName(source.Path), _config, AppendLog, ct)
+            : _backupService.RestoreFromWebDavAsync(game, source.Path, _config, _webDavPassword, AppendLog, ct);
+
+    /// <returns>False when the user cancelled before the save was replaced.</returns>
+    public Task<bool> RestoreFromSourceAsync(GameItemViewModel item, BackupSource source) =>
+        RunRestoreAsync(item, ct => RestoreCoreAsync(item.Game, source, ct));
+
+    /// <returns>False when the user cancelled before the save was replaced.</returns>
+    public Task<bool> RestoreFromHistoryAsync(GameItemViewModel item, string backupName, bool webDav) =>
+        RunRestoreAsync(item, ct => webDav
+            ? _backupService.RestoreFromWebDavAsync(item.Game, backupName, _config, _webDavPassword, AppendLog, ct)
+            : _backupService.RestoreFromOneDriveAsync(item.Game, backupName, _config, AppendLog, ct));
+
+    /// <returns>False when the user cancelled before the save was replaced.</returns>
+    public Task<bool> RestoreFromSnapshotAsync(GameItemViewModel item, string snapshotPath) =>
+        RunRestoreAsync(item, ct => _backupService.RestoreFromSnapshotAsync(item.Game, snapshotPath, AppendLog, ct));
+
+    private async Task<bool> RunRestoreAsync(GameItemViewModel item, Func<CancellationToken, Task> restore)
+    {
+        var ct = BeginBusy(Localization.T("Busy.Restoring", item.Name));
         try
         {
-            await WithMonitoringPausedAsync(() => source.Method == Constants.MethodOneDrive
-                ? _backupService.RestoreFromOneDriveAsync(item.Game, Path.GetFileName(source.Path), _config, AppendLog)
-                : _backupService.RestoreFromWebDavAsync(item.Game, source.Path, _config, _webDavPassword, AppendLog));
+            await WithMonitoringPausedAsync(() => Task.Run(() => restore(ct), ct));
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            AppendLog(Localization.T("Log.RestoreCancelled", item.Name));
+            return false;
         }
         finally
         {
-            IsBusy = false;
+            EndBusy();
             await RefreshGamesAsync();
         }
     }
 
-    public async Task RestoreFromHistoryAsync(GameItemViewModel item, string backupName, bool webDav)
+    /// <summary>Restores several games one after another; one failure doesn't stop the rest, a cancel does.</summary>
+    public async Task<(int Restored, List<string> Failed, bool Cancelled)> RestoreManyAsync(
+        IReadOnlyList<(GameItemViewModel Item, BackupSource Source)> plan)
     {
-        IsBusy = true;
+        var restored = 0;
+        var failed = new List<string>();
+        var cancelled = false;
+        var ct = BeginBusy(Localization.T("Main.Busy"));
         try
         {
-            await WithMonitoringPausedAsync(() => webDav
-                ? _backupService.RestoreFromWebDavAsync(item.Game, backupName, _config, _webDavPassword, AppendLog)
-                : _backupService.RestoreFromOneDriveAsync(item.Game, backupName, _config, AppendLog));
+            await WithMonitoringPausedAsync(async () =>
+            {
+                for (var i = 0; i < plan.Count; i++)
+                {
+                    var (item, source) = plan[i];
+                    if (ct.IsCancellationRequested)
+                    {
+                        cancelled = true;
+                        return;
+                    }
+                    SetBusyProgress(Localization.T("Busy.RestoringN", item.Name, i + 1, plan.Count), ct);
+                    try
+                    {
+                        await Task.Run(() => RestoreCoreAsync(item.Game, source, ct), ct);
+                        restored++;
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        cancelled = true;
+                        AppendLog(Localization.T("Log.RestoreCancelled", item.Name));
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        failed.Add($"{item.Name}: {ex.Message}");
+                        AppendLog(Localization.T("Msg.RestoreFailed", $"{item.Name}: {ex.Message}"));
+                    }
+                }
+            });
         }
         finally
         {
-            IsBusy = false;
+            EndBusy();
             await RefreshGamesAsync();
         }
-    }
-
-    public async Task RestoreFromSnapshotAsync(GameItemViewModel item, string snapshotPath)
-    {
-        IsBusy = true;
-        try
-        {
-            await WithMonitoringPausedAsync(() =>
-                _backupService.RestoreFromSnapshotAsync(item.Game, snapshotPath, AppendLog));
-        }
-        finally
-        {
-            IsBusy = false;
-            await RefreshGamesAsync();
-        }
+        return (restored, failed, cancelled);
     }
 
     /// <summary>
@@ -491,6 +655,22 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public void RestartMonitoringIfActive() => _monitoring.RestartIfActive();
+
+    /// <summary>Keeps what this PC remembers about a game's last sync in step with an edit of the game.</summary>
+    public void OnGameEdited(string oldName, string oldSave, GameConfig game)
+    {
+        if (_backupService.Baselines is not { } baselines)
+            return;
+        // Another folder: what it was in sync with says nothing about the new one.
+        if (!string.Equals(Path.TrimEndingDirectorySeparator(oldSave), Path.TrimEndingDirectorySeparator(game.Save),
+                StringComparison.OrdinalIgnoreCase))
+            baselines.Remove(oldName);
+        else if (oldName != game.Name)
+            baselines.Rename(oldName, game.Name);
+    }
+
+    /// <summary>Forgets a game's last sync, for a game that was deleted or replaced.</summary>
+    public void ForgetSync(string gameName) => _backupService.Baselines?.Remove(gameName);
 
     public async Task BackupConfigToCloudAsync()
     {
@@ -665,11 +845,38 @@ public sealed class MainViewModel : ObservableObject
 
     // ---------------- Auto sync on startup ----------------
 
+    /// <summary>
+    /// Asks the user which side of a save conflict to keep; set by the main window. Without it a
+    /// conflict is left alone, which loses nothing.
+    /// </summary>
+    public Func<SyncConflict, Task<ConflictChoice>>? ResolveConflict { get; set; }
+
+    private Task<ConflictChoice> AskConflictAsync(SyncConflict conflict)
+    {
+        if (ResolveConflict is not { } resolve)
+            return Task.FromResult(ConflictChoice.Skip);
+        var answer = new TaskCompletionSource<ConflictChoice>(TaskCreationOptions.RunContinuationsAsynchronously);
+        RunOnUi(async () =>
+        {
+            try
+            {
+                answer.SetResult(await resolve(conflict));
+            }
+            catch (Exception ex)
+            {
+                AppendLog(Localization.T("Log.TaskError", ex.Message));
+                answer.SetResult(ConflictChoice.Skip);
+            }
+        });
+        return answer.Task;
+    }
+
     private async Task AutoSyncAllGamesAsync()
     {
         foreach (var game in _config.Games.ToList())
         {
-            if (game.Paused || game.BackupMethods.Count == 0 || !Directory.Exists(game.Save))
+            // Without a target that is set up there is nothing to compare with (and "backing up" would do nothing).
+            if (game.Paused || BackupService.TargetsFor(game, _config).Count == 0 || !Directory.Exists(game.Save))
                 continue;
             try
             {
@@ -697,31 +904,62 @@ public sealed class MainViewModel : ObservableObject
                 ? FileUtil.GetLatestMTime(source.Path)
                 : BackupName.Parse(source.Path).MTime;
         }
+        // Both sides moved on since the last sync here, so the newer one isn't necessarily the one to keep.
+        if (source is not null && _backupService.ChangedOnBothSides(game, localTime, cloudTime))
+        {
+            AppendLog(Localization.T("Log.AutoSyncConflict", game.Name));
+            var baseline = _backupService.Baselines?.Get(game.Name) ?? 0;
+            switch (await AskConflictAsync(new SyncConflict(game, localTime, cloudTime, baseline, source)))
+            {
+                case ConflictChoice.KeepLocal:
+                    AppendLog(Localization.T("Log.ConflictKeepLocal", game.Name));
+                    await AutoUploadAsync(game);
+                    break;
+                case ConflictChoice.UseCloud:
+                    AppendLog(Localization.T("Log.ConflictUseCloud", game.Name));
+                    await AutoDownloadAsync(game, source);
+                    break;
+                default:
+                    AppendLog(Localization.T("Log.AutoSyncConflictSkipped", game.Name));
+                    break;
+            }
+            return;
+        }
         if (localTime - cloudTime > Constants.SyncThresholdSeconds)
         {
             AppendLog(Localization.T("Log.AutoSyncUpload", game.Name));
-            var result = await _backupService.RunBackupAsync(game, _config, _webDavPassword, AppendLog);
-            RunOnUi(() =>
-            {
-                var item = Games.FirstOrDefault(g => ReferenceEquals(g.Game, game));
-                item?.SetLastFailure(result.HasFailures ? result.FailureSummary : null);
-                if (result.HasFailures)
-                    RaiseFailureNotice(game.Name, result.FailureSummary);
-            });
-            await Task.Delay(1000);
+            await AutoUploadAsync(game);
         }
         else if (cloudTime - localTime > Constants.SyncThresholdSeconds && source is not null)
         {
             AppendLog(Localization.T("Log.AutoSyncDownload", game.Name));
-            await WithMonitoringPausedAsync(() => source.Method == Constants.MethodOneDrive
-                ? _backupService.RestoreFromOneDriveAsync(game, Path.GetFileName(source.Path), _config, AppendLog)
-                : _backupService.RestoreFromWebDavAsync(game, source.Path, _config, _webDavPassword, AppendLog));
-            await Task.Delay(1000);
+            await AutoDownloadAsync(game, source);
         }
         else
         {
+            // Both sides agree: from here on, a change on either side is measured against this.
+            _backupService.RememberSynced(game, localTime);
             AppendLog(Localization.T("Log.AutoSyncSynced", game.Name));
         }
+    }
+
+    private async Task AutoUploadAsync(GameConfig game)
+    {
+        var result = await _backupService.RunBackupAsync(game, _config, _webDavPassword, AppendLog);
+        RunOnUi(() =>
+        {
+            var item = Games.FirstOrDefault(g => ReferenceEquals(g.Game, game));
+            item?.SetLastFailure(result.HasFailures ? result.FailureSummary : null);
+            if (result.HasFailures)
+                RaiseFailureNotice(game.Name, result.FailureSummary);
+        });
+        await Task.Delay(1000);
+    }
+
+    private async Task AutoDownloadAsync(GameConfig game, BackupSource source)
+    {
+        await WithMonitoringPausedAsync(() => RestoreCoreAsync(game, source, CancellationToken.None));
+        await Task.Delay(1000);
     }
 
     // ---------------- Logging / UI marshalling ----------------

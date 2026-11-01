@@ -19,4 +19,8 @@ public static class RelativeTime
             return Localization.T("Time.DaysAgo", (int)age.TotalDays);
         return then.ToString("yyyy-MM-dd");
     }
+
+    /// <summary>A file time in Unix seconds, as local "yyyy-MM-dd HH:mm:ss".</summary>
+    public static string FormatUnix(long unixSeconds) =>
+        DateTimeOffset.FromUnixTimeSeconds(unixSeconds).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
 }

@@ -43,7 +43,9 @@ public partial class MainWindow : Window
             ? new Thickness(SystemParameters.WindowResizeBorderThickness.Left + 2)
             : new Thickness(0);
         viewModel.Logs.CollectionChanged += OnLogsChanged;
+        viewModel.ResolveConflict = ResolveConflictAsync;
         Closing += OnWindowClosing;
+        KeyDown += OnWindowKeyDown;
         var wakeupTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         wakeupTimer.Tick += (_, _) => viewModel.CheckWakeupFile();
         wakeupTimer.Start();
@@ -135,6 +137,70 @@ public partial class MainWindow : Window
         e.Cancel = true;
         Hide();
         _vm.AppendLog(Localization.T("Main.HiddenToTray"));
+        // Said once: otherwise closing the window looks like quitting, while backups carry on in the tray.
+        if (!_vm.Config.TrayHintShown)
+        {
+            _tray.ShowNotification(Localization.T("Tray.HiddenTitle"), Localization.T("Tray.HiddenBody"), isError: false);
+            try
+            {
+                _vm.ApplyConfigChange(config => config.TrayHintShown = true);
+            }
+            catch (Exception ex)
+            {
+                _vm.AppendLog(Localization.T("Log.TaskError", ex.Message));
+            }
+        }
+    }
+
+    // F5 refreshes, Ctrl+N adds a game, Del deletes the selected games (only in the library, where they are in view).
+    private void OnWindowKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.F5 && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            OnRefresh(sender, e);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.N && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            OnAddGame(sender, e);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None
+                 && _vm.Dashboard.IsLibrary && _vm.CanUseSelection)
+        {
+            OnDeleteGame(sender, e);
+            e.Handled = true;
+        }
+    }
+
+    private void OnCancelBusy(object sender, RoutedEventArgs e) => _vm.CancelBusy();
+
+    /// <summary>Startup sync found a save that changed on both sides; the user decides which one stays.</summary>
+    private Task<ConflictChoice> ResolveConflictAsync(SyncConflict conflict)
+    {
+        // A login start keeps the window in the tray, but this question needs an answer.
+        if (!IsVisible)
+            Show();
+        if (WindowState == WindowState.Minimized)
+            WindowState = WindowState.Normal;
+        Activate();
+        var picker = new SourcePickerDialog(
+            new List<string> { Localization.T("Conflict.KeepLocal"), Localization.T("Conflict.UseCloud") },
+            Localization.T("Conflict.Prompt", conflict.Game.Name, RelativeTime.FormatUnix(conflict.BaselineMTime),
+                RelativeTime.FormatUnix(conflict.LocalMTime), conflict.Source.Label, RelativeTime.FormatUnix(conflict.CloudMTime)),
+            Localization.T("Conflict.Title"), Localization.T("Conflict.Skip"))
+        {
+            Owner = this
+        };
+        var choice = picker.ShowDialog() != true
+            ? ConflictChoice.Skip
+            : picker.SelectedIndex switch
+            {
+                0 => ConflictChoice.KeepLocal,
+                1 => ConflictChoice.UseCloud,
+                _ => ConflictChoice.Skip
+            };
+        return Task.FromResult(choice);
     }
 
     public void ForceClose()
@@ -247,6 +313,9 @@ public partial class MainWindow : Window
 
     private void OnToggleMonitoring(object sender, RoutedEventArgs e)
     {
+        // A restore pauses monitoring while it replaces the save; starting it in between would watch the old folder.
+        if (!_vm.CanAct)
+            return;
         if (_vm.IsMonitoring)
             _vm.Monitoring.Stop();
         else
@@ -261,22 +330,35 @@ public partial class MainWindow : Window
 
     private async void OnForceBackup(object sender, RoutedEventArgs e)
     {
-        var selected = _vm.SelectedGames.Where(g => Directory.Exists(g.Game.Save)).ToList();
+        if (!_vm.CanAct)
+            return;
+        var selected = _vm.SelectedGames.ToList();
         if (selected.Count == 0)
         {
             MessageBox.Show(this, Localization.T("Msg.SelectUploadGames"), Localization.T("Common.Info"),
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        if (selected.Count > 1 &&
-            MessageBox.Show(this, Localization.T("Msg.BatchUploadConfirm", selected.Count), Localization.T("Msg.BatchUploadTitle"),
-                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+        // A selected game whose folder is gone gets that said, not "select a game".
+        var missing = selected.Where(g => !Directory.Exists(g.Game.Save)).ToList();
+        var ready = selected.Except(missing).ToList();
+        var missingText = string.Join("\n", missing.Select(g => $"{g.Name}: {g.Game.Save}"));
+        if (ready.Count == 0)
+        {
+            MessageBox.Show(this, Localization.T("Msg.UploadSaveMissing", missingText), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if ((ready.Count > 1 || missing.Count > 0) &&
+            MessageBox.Show(this, Localization.T("Msg.BatchUploadConfirm", ready.Count)
+                                  + (missing.Count > 0 ? Localization.T("Msg.UploadSkipMissing", missingText) : ""),
+                Localization.T("Msg.BatchUploadTitle"), MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
         {
             return;
         }
         try
         {
-            var failures = await _vm.ForceBackupAsync();
+            var (failures, _) = await _vm.ForceBackupAsync(ready);
             // Failures used to land in the log only, so an upload that did nothing looked like one that worked.
             if (failures.Count > 0)
                 MessageBox.Show(this, Localization.T("Msg.UploadSomeFailed", string.Join("\n", failures)),
@@ -291,6 +373,8 @@ public partial class MainWindow : Window
 
     private async void OnRestore(object sender, RoutedEventArgs e)
     {
+        if (!_vm.CanAct)
+            return;
         var selected = _vm.SelectedGames.ToList();
         if (selected.Count == 0)
         {
@@ -351,7 +435,7 @@ public partial class MainWindow : Window
                 if (source is null)
                     return;
 
-                var confirm = BuildRestoreConfirmMessage(item, source);
+                var confirm = _vm.RestoreConfirmMessage(item, source);
                 if (MessageBox.Show(this, confirm, Localization.T("Msg.RestoreConfirmTitle"),
                         MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
                     return;
@@ -374,28 +458,37 @@ public partial class MainWindow : Window
         var plan = new List<(GameItemViewModel Item, BackupSource Source)>();
         var localNewer = new List<string>();
         var noBackup = new List<string>();
-        await _vm.RunBusyAsync(async () =>
+        try
         {
-            foreach (var item in selected)
+            await _vm.RunBusyAsync(Localization.T("Busy.FindingBackups"), async ct =>
             {
-                var source = await _vm.BackupService.FindLatestSourceAsync(
-                    item.Game, _vm.Config, _vm.WebDavPassword, preference);
-                if (source is null)
+                foreach (var item in selected)
                 {
-                    noBackup.Add(item.Name);
-                    _vm.AppendLog(Localization.T("Msg.SkipNoBackupLog", item.Name));
+                    ct.ThrowIfCancellationRequested();
+                    var source = await _vm.BackupService.FindLatestSourceAsync(
+                        item.Game, _vm.Config, _vm.WebDavPassword, preference, ct);
+                    if (source is null)
+                    {
+                        noBackup.Add(item.Name);
+                        _vm.AppendLog(Localization.T("Msg.SkipNoBackupLog", item.Name));
+                    }
+                    else if (FileUtil.GetLatestMTime(item.Game.Save) - BackupService.GetBackupMTime(source)
+                             > Constants.SyncThresholdSeconds)
+                    {
+                        localNewer.Add(item.Name);
+                    }
+                    else
+                    {
+                        plan.Add((item, source));
+                    }
                 }
-                else if (FileUtil.GetLatestMTime(item.Game.Save) - BackupService.GetBackupMTime(source)
-                         > Constants.SyncThresholdSeconds)
-                {
-                    localNewer.Add(item.Name);
-                }
-                else
-                {
-                    plan.Add((item, source));
-                }
-            }
-        });
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            // Nothing was restored yet.
+            return;
+        }
 
         var skipped = (localNewer.Count > 0 ? Localization.T("Msg.BatchSkipLocalNewer", JoinNames(localNewer)) : "")
                       + (noBackup.Count > 0 ? Localization.T("Msg.BatchSkipNoBackup", JoinNames(noBackup)) : "");
@@ -411,21 +504,10 @@ public partial class MainWindow : Window
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
 
-        var failed = new List<string>();
-        foreach (var (item, source) in plan)
-        {
-            try
-            {
-                await _vm.RestoreFromSourceAsync(item, source);
-            }
-            catch (Exception ex)
-            {
-                failed.Add($"{item.Name}: {ex.Message}");
-                _vm.AppendLog(Localization.T("Msg.RestoreFailed", $"{item.Name}: {ex.Message}"));
-            }
-        }
-        var summary = Localization.T("Msg.BatchDownloadDone", plan.Count - failed.Count)
-                      + (failed.Count > 0 ? Localization.T("Msg.BatchDownloadFailed", failed.Count, string.Join("\n", failed)) : "");
+        var (restored, failed, cancelled) = await _vm.RestoreManyAsync(plan);
+        var summary = Localization.T("Msg.BatchDownloadDone", restored)
+                      + (failed.Count > 0 ? Localization.T("Msg.BatchDownloadFailed", failed.Count, string.Join("\n", failed)) : "")
+                      + (cancelled ? Localization.T("Msg.BatchDownloadCancelled") : "");
         MessageBox.Show(this, summary, Localization.T("Common.Done"), MessageBoxButton.OK,
             failed.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
     }
@@ -463,36 +545,15 @@ public partial class MainWindow : Window
             return;
         try
         {
-            await _vm.RestoreFromSnapshotAsync(item, snapshot.Path);
-            MessageBox.Show(this, Localization.T("Snap.Done", item.Name), Localization.T("Common.Done"),
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            if (await _vm.RestoreFromSnapshotAsync(item, snapshot.Path))
+                MessageBox.Show(this, Localization.T("Snap.Done", item.Name), Localization.T("Common.Done"),
+                    MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, Localization.T("Msg.RestoreFailed", ex.Message), Localization.T("Common.Error"),
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
-    }
-
-    private static string BuildRestoreConfirmMessage(GameItemViewModel item, BackupSource source)
-    {
-        var localTs = FileUtil.GetLatestMTime(item.Game.Save);
-        var cloudTs = BackupService.GetBackupMTime(source);
-        var localStr = localTs > 0
-            ? DateTimeOffset.FromUnixTimeSeconds(localTs).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
-            : Localization.T("Msg.RestoreNoLocal");
-        var cloudStr = cloudTs > 0
-            ? DateTimeOffset.FromUnixTimeSeconds(cloudTs).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
-            : Localization.T("Msg.RestoreUnknown");
-        var headline = localTs == 0
-            ? Localization.T("Msg.RestoreConfirmLocalEmpty")
-            : cloudTs > localTs
-                ? Localization.T("Msg.RestoreConfirmCloudNew")
-                : Localization.T("Msg.RestoreConfirmLocalNew");
-        return $"{headline}\n{Localization.T("Msg.RestoreSource", source.Label)}\n" +
-               $"{Localization.T("Msg.RestoreCloudTime", cloudStr)}\n" +
-               $"{Localization.T("Msg.RestoreLocalTime", localStr)}\n\n" +
-               Localization.T("Msg.RestoreAsk");
     }
 
     private void OnOpenLocalFolder(object sender, RoutedEventArgs e)
@@ -574,6 +635,13 @@ public partial class MainWindow : Window
         var game = item.Game;
         if (game.HasMethod(method))
         {
+            // Unticking the last one used to bring OneDrive back unasked, even with OneDrive not set up.
+            if (game.BackupMethods.Count == 1)
+            {
+                MessageBox.Show(this, Localization.T("Msg.LastMethod"), Localization.T("Common.Info"),
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
             game.BackupMethods.Remove(method);
         }
         else
@@ -592,8 +660,6 @@ public partial class MainWindow : Window
             }
             game.BackupMethods.Add(method);
         }
-        if (game.BackupMethods.Count == 0)
-            game.BackupMethods.Add(Constants.MethodOneDrive);
         item.Refresh();
         _vm.ConfigStore.Save(_vm.Config);
         _vm.RestartMonitoringIfActive();
@@ -627,6 +693,7 @@ public partial class MainWindow : Window
             return;
         }
         var oldName = item.Game.Name;
+        var oldSave = item.Game.Save;
         var dialog = new EditGameDialog(_vm, item.Game)
         {
             Owner = this
@@ -634,6 +701,7 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() != true)
             return;
 
+        _vm.OnGameEdited(oldName, oldSave, item.Game);
         var renamed = oldName != item.Game.Name;
         // No backup may land in either cloud folder while it is being renamed.
         var pauseMonitoring = renamed && _vm.Monitoring.IsMonitoring;
@@ -684,7 +752,7 @@ public partial class MainWindow : Window
     private void OnDeleteGame(object sender, RoutedEventArgs e)
     {
         var selected = _vm.SelectedGames.ToList();
-        if (selected.Count == 0)
+        if (selected.Count == 0 || !_vm.CanAct)
             return;
         if (MessageBox.Show(this, Localization.T("Msg.DeleteGamesConfirm"), Localization.T("Common.Confirm"), MessageBoxButton.YesNo,
                 MessageBoxImage.Question) != MessageBoxResult.Yes)
@@ -695,6 +763,7 @@ public partial class MainWindow : Window
         {
             _vm.Config.Games.Remove(item.Game);
             _vm.Games.Remove(item);
+            _vm.ForgetSync(item.Game.Name);
         }
         _vm.ConfigStore.Save(_vm.Config);
         if (_vm.Config.AutoBackupConfigToCloud)
@@ -866,6 +935,7 @@ public partial class MainWindow : Window
                     _vm.Config.Games.RemoveAll(SameName);
                     foreach (var existing in _vm.Games.Where(g => SameName(g.Game)).ToList())
                         _vm.Games.Remove(existing);
+                    _vm.ForgetSync(ig.Name);
                 }
                 _vm.Config.Games.Add(ig);
                 _vm.Games.Add(new GameItemViewModel(ig));

@@ -59,7 +59,10 @@ public sealed class DashboardViewModel : ObservableObject
     public int LocalNewCount => _owner.Games.Count(g => g.Status.Kind == SyncStatusKind.LocalNew);
     public int CloudNewCount => _owner.Games.Count(g => g.Status.Kind == SyncStatusKind.CloudNew);
     public int PausedCount => _owner.Games.Count(g => g.IsPaused);
-    public int UncheckedCount => _owner.Games.Count(g => g.Status.Kind is SyncStatusKind.Unknown or SyncStatusKind.None);
+    public int ConflictCount => _owner.Games.Count(g => g.Status.Kind == SyncStatusKind.Conflict);
+    public int NoSavesCount => _owner.Games.Count(g => g.Status.Kind == SyncStatusKind.NoSaves);
+    public int NotConfiguredCount => _owner.Games.Count(g => g.Status.Kind == SyncStatusKind.NotConfigured);
+    public int UncheckedCount => _owner.Games.Count(g => g.Status.Kind == SyncStatusKind.Unknown);
     public int LogCount => _owner.Logs.Count;
     public bool HasLogs => LogCount > 0;
 
@@ -85,11 +88,45 @@ public sealed class DashboardViewModel : ObservableObject
     public string WebDavAddress => IsWebDavConfigured ? _owner.Config.WebDavUrl : Localization.T("Shell.ConfigureHint");
     public string EngineState => Localization.T(_owner.IsMonitoring ? "Shell.Watching" : "Shell.Idle");
     public string SyncCaption => Localization.T("Shell.SyncCaption", SyncedCount, TotalGames);
-    public string PausedCaption => Localization.T("Shell.PausedCaption", PausedCount, UncheckedCount);
+
+    /// <summary>
+    /// The games that are neither synced nor waiting for a backup or download, each reason on its own:
+    /// "no saves yet" and "not set up" need different things from the user than "not checked yet".
+    /// </summary>
+    public string PausedCaption => string.Join(" · ", CaptionParts());
+
+    private IEnumerable<string> CaptionParts()
+    {
+        yield return Localization.T("Shell.PausedN", PausedCount);
+        if (ConflictCount > 0)
+            yield return Localization.T("Shell.ConflictN", ConflictCount);
+        if (NotConfiguredCount > 0)
+            yield return Localization.T("Shell.NotConfiguredN", NotConfiguredCount);
+        if (NoSavesCount > 0)
+            yield return Localization.T("Shell.NoSavesN", NoSavesCount);
+        if (UncheckedCount > 0)
+            yield return Localization.T("Shell.UncheckedN", UncheckedCount);
+    }
+
     public string LibraryCaption => Localization.T("Shell.LibraryCaption", TotalGames);
     public double SyncPercent => TotalGames == 0 ? 0 : SyncedCount * 100.0 / TotalGames;
-    public IEnumerable<GameItemViewModel> PreviewGames => _owner.Games.Take(3);
+
+    /// <summary>Three games for the overview: those that need something done come first, in library order.</summary>
+    public IEnumerable<GameItemViewModel> PreviewGames => _owner.Games.OrderBy(AttentionRank).Take(3);
+
     public IEnumerable<string> RecentLogs => _owner.Logs.Reverse().Take(3);
+
+    private static int AttentionRank(GameItemViewModel game) => game.HasProblem ? 0 : game.Status.Kind switch
+    {
+        SyncStatusKind.Conflict => 1,
+        SyncStatusKind.CloudNew => 2,
+        SyncStatusKind.LocalNew => 3,
+        SyncStatusKind.NotConfigured => 4,
+        SyncStatusKind.Unknown => 5,
+        SyncStatusKind.NoSaves => 6,
+        SyncStatusKind.Synced => 7,
+        _ => 8
+    };
 
     private void OnGamesChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {

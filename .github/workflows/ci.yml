@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    # WPF only builds on Windows.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      # The whole solution, so a broken window or dialog fails the run too, not only the core library.
+      - name: Build
+        run: dotnet build GameCloudSync.CSharp/GameCloudSync.sln -c Release
+
+      - name: Test
+        run: dotnet test GameCloudSync.CSharp/GameCloudSync.sln -c Release --no-build

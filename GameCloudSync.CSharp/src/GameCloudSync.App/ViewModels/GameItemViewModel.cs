@@ -84,6 +84,7 @@ public sealed class GameItemViewModel : ObservableObject
         SyncStatusKind.CloudNew => Brush(Solid("#9AD7F1")),
         SyncStatusKind.Paused => Brush(Solid("#AFBBBD")),
         SyncStatusKind.Error => Brush(Solid("#F8ADB1")),
+        SyncStatusKind.Conflict => Brush(Solid("#F5B971")),
         _ => Brush(Solid("#ACBABB"))
     };
 
@@ -94,6 +95,7 @@ public sealed class GameItemViewModel : ObservableObject
         SyncStatusKind.CloudNew => Brush(Solid("#253E47")),
         SyncStatusKind.Paused => Brush(Solid("#303739")),
         SyncStatusKind.Error => Brush(Solid("#4A2A2E")),
+        SyncStatusKind.Conflict => Brush(Solid("#4A3923")),
         _ => Brush(Solid("#303739"))
     };
 

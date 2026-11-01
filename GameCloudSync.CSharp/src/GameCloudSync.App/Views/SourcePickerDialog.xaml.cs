@@ -6,7 +6,9 @@ namespace GameCloudSync.App.Views;
 
 public partial class SourcePickerDialog : Window
 {
-    public SourcePickerDialog(List<string>? options, string? prompt = null)
+    /// <param name="title">The window title; by default the one for picking a download source.</param>
+    /// <param name="cancelText">The label of the button that picks nothing; by default "Cancel".</param>
+    public SourcePickerDialog(List<string>? options, string? prompt = null, string? title = null, string? cancelText = null)
     {
         InitializeComponent();
         DataContext = this;
@@ -15,8 +17,8 @@ public partial class SourcePickerDialog : Window
         PromptText = prompt ?? (options is null
             ? Localization.T("Pick.BatchPrompt")
             : Localization.T("Pick.SinglePrompt"));
-        TitleText = Localization.T("Pick.Title");
-        CancelText = Localization.T("Common.Cancel");
+        TitleText = title ?? Localization.T("Pick.Title");
+        CancelText = cancelText ?? Localization.T("Common.Cancel");
     }
 
     public List<string> Options { get; }
