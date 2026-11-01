@@ -27,6 +27,72 @@ public class BackupServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RestoreFromOneDrive_MissingBackup_PreservesExistingSave()
+    {
+        var save = Path.Combine(_root, "save");
+        Directory.CreateDirectory(save);
+        await File.WriteAllTextAsync(Path.Combine(save, "progress.dat"), "original");
+        var game = new GameConfig { Name = "game", Save = save };
+
+        await Assert.ThrowsAsync<DirectoryNotFoundException>(() => new BackupService()
+            .RestoreFromOneDriveAsync(game, "save_missing", new AppConfig { CloudRoot = _root }, _ => { }));
+
+        Assert.Equal("original", await File.ReadAllTextAsync(Path.Combine(save, "progress.dat")));
+        Assert.Empty(Directory.GetDirectories(_root, ".gcs-*"));
+    }
+
+    [Fact]
+    public async Task RestoreDirectory_FailedPreparation_PreservesOriginalAndCleansStaging()
+    {
+        var save = Path.Combine(_root, "save");
+        Directory.CreateDirectory(save);
+        await File.WriteAllTextAsync(Path.Combine(save, "progress.dat"), "original");
+
+        await Assert.ThrowsAsync<IOException>(() => FileUtil.RestoreDirectoryAsync(save, async staging =>
+        {
+            Directory.CreateDirectory(staging);
+            await File.WriteAllTextAsync(Path.Combine(staging, "partial.dat"), "partial");
+            throw new IOException("Simulated read failure");
+        }));
+
+        Assert.Equal("original", await File.ReadAllTextAsync(Path.Combine(save, "progress.dat")));
+        Assert.Empty(Directory.GetDirectories(_root, ".gcs-*"));
+    }
+
+    [Fact]
+    public async Task RestoreDirectory_CancelledBeforeCommit_PreservesOriginal()
+    {
+        var save = Path.Combine(_root, "save");
+        Directory.CreateDirectory(save);
+        await File.WriteAllTextAsync(Path.Combine(save, "progress.dat"), "original");
+        using var cancellation = new CancellationTokenSource();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => FileUtil.RestoreDirectoryAsync(save, staging =>
+        {
+            Directory.CreateDirectory(staging);
+            cancellation.Cancel();
+            return Task.CompletedTask;
+        }, cancellation.Token));
+        Assert.Equal("original", await File.ReadAllTextAsync(Path.Combine(save, "progress.dat")));
+        Assert.Empty(Directory.GetDirectories(_root, ".gcs-*"));
+    }
+
+    [Fact]
+    public async Task RestoreFromOneDrive_Success_ReplacesStaleFiles()
+    {
+        var save = Path.Combine(_root, "save");
+        var backup = Path.Combine(_root, "cloud", "game", "save_test");
+        Directory.CreateDirectory(save);
+        Directory.CreateDirectory(backup);
+        await File.WriteAllTextAsync(Path.Combine(save, "stale.dat"), "old");
+        await File.WriteAllTextAsync(Path.Combine(backup, "progress.dat"), "new");
+        await new BackupService().RestoreFromOneDriveAsync(new GameConfig { Name = "game", Save = save },
+            "save_test", new AppConfig { CloudRoot = Path.Combine(_root, "cloud") }, _ => { });
+        Assert.False(File.Exists(Path.Combine(save, "stale.dat")));
+        Assert.Equal("new", await File.ReadAllTextAsync(Path.Combine(save, "progress.dat")));
+        Assert.Empty(Directory.GetDirectories(_root, ".gcs-*"));
+    }
+
+    [Fact]
     public async Task RestoreFromOneDrive_CreatesMissingSaveDirectoryChain()
     {
         // Cloud side: one backup with a file.
