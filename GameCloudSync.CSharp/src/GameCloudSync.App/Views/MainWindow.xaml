@@ -1,12 +1,16 @@
 <Window x:Class="GameCloudSync.App.Views.MainWindow"
+        Style="{StaticResource {x:Type Window}}"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:GameCloudSync.App.ViewModels"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:loc="clr-namespace:GameCloudSync.Core.Services;assembly=GameCloudSync.Core"
         Title="{Binding [Win.Title], Source={x:Static loc:Localization.Instance}}"
-        Width="1180" Height="720" MinWidth="980" MinHeight="600"
-        WindowStartupLocation="CenterScreen"
-        Icon="/Assets/icon.ico">
+        Width="1360" Height="920" MinWidth="1120" MinHeight="740"
+        WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterScreen" Icon="/Assets/icon.ico">
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="52" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
     <Window.Resources>
         <ContextMenu x:Key="GameContextMenu">
             <MenuItem Header="{Binding [Btn.Upload], Source={x:Static loc:Localization.Instance}}" Click="OnForceBackup" />
@@ -40,87 +44,201 @@
         <DataTemplate x:Key="GameCardTemplate" DataType="{x:Type vm:GameItemViewModel}">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="190" />
+                    <ColumnDefinition Width="56" />
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="150" />
-                    <ColumnDefinition Width="24" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="48" />
                 </Grid.ColumnDefinitions>
-
-                <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,12,0">
-                    <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold"
-                               Foreground="{StaticResource TextBrush}" TextTrimming="CharacterEllipsis" />
-                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                        <Border Style="{StaticResource MethodBadge}" Margin="0,0,6,0"
-                                Visibility="{Binding IsOneDrive, Converter={x:Static vm:Converters.BoolToVisibility}}">
-                            <TextBlock Text="OneDrive" FontSize="11" Foreground="{StaticResource PrimaryBrush}" />
-                        </Border>
-                        <Border Style="{StaticResource MethodBadge}" Margin="0,0,6,0"
-                                Visibility="{Binding IsWebDav, Converter={x:Static vm:Converters.BoolToVisibility}}">
-                            <TextBlock Text="WebDAV" FontSize="11" Foreground="{StaticResource PrimaryBrush}" />
-                        </Border>
-                        <TextBlock Text="{Binding [Main.GamePausedBadge], Source={x:Static loc:Localization.Instance}}" FontSize="11" Foreground="{StaticResource MutedBrush}"
-                                   Visibility="{Binding IsPaused, Converter={x:Static vm:Converters.BoolToVisibility}}"
-                                   VerticalAlignment="Center" />
-                    </StackPanel>
-                </StackPanel>
-
-                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,12,0">
-                    <TextBlock Text="{Binding SavePath}" FontSize="12.5"
-                               Foreground="{StaticResource TextSecBrush}" TextTrimming="CharacterEllipsis"
-                               ToolTip="{Binding SavePath}" />
-                </StackPanel>
-
-                <Border Grid.Column="2" Style="{StaticResource StatusBadge}"
-                        Background="{Binding StatusBgBrush}" VerticalAlignment="Center"
-                        HorizontalAlignment="Right">
-                    <TextBlock Text="{Binding StatusText}" FontSize="12" FontWeight="SemiBold"
-                               Foreground="{Binding StatusBrush}" />
+                <Border Width="40" Height="40" CornerRadius="12" Background="{StaticResource PrimarySoftBrush}" HorizontalAlignment="Left">
+                    <TextBlock Text="&#xE7FC;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                 </Border>
-
-                <TextBlock Grid.Column="3" Text="⋮" FontSize="18" VerticalAlignment="Center"
-                           HorizontalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,16,0">
+                    <WrapPanel>
+                        <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" MaxWidth="300" TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}" Margin="0,0,12,0" />
+                        <Border Style="{StaticResource MethodBadge}" Margin="0,0,6,0" VerticalAlignment="Center" Visibility="{Binding IsOneDrive, Converter={x:Static vm:Converters.BoolToVisibility}}">
+                            <TextBlock Text="OneDrive" FontSize="10" Foreground="{StaticResource PrimaryBrush}" />
+                        </Border>
+                        <Border Style="{StaticResource MethodBadge}" VerticalAlignment="Center" Visibility="{Binding IsWebDav, Converter={x:Static vm:Converters.BoolToVisibility}}">
+                            <TextBlock Text="WebDAV" FontSize="10" Foreground="{StaticResource PrimaryBrush}" />
+                        </Border>
+                    </WrapPanel>
+                    <TextBlock Text="{Binding SavePath}" FontSize="12" Margin="0,7,0,0" Foreground="{StaticResource TextSecBrush}" TextTrimming="CharacterEllipsis" ToolTip="{Binding SavePath}" />
+                </StackPanel>
+                <Border Grid.Column="2" Style="{StaticResource StatusBadge}" Background="{Binding StatusBgBrush}" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding StatusText}" FontSize="12" Foreground="{Binding StatusBrush}" />
+                </Border>
+                <Button Grid.Column="3" Content="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="16" Style="{StaticResource SecondaryButton}" Padding="0" Width="32" MinHeight="32" HorizontalAlignment="Right" VerticalAlignment="Center" Click="OnGameActions" ToolTip="{Binding [Main.GameActions], Source={x:Static loc:Localization.Instance}}" AutomationProperties.Name="{Binding [Main.GameActions], Source={x:Static loc:Localization.Instance}}" />
+            </Grid>
+        </DataTemplate>
+        <DataTemplate x:Key="PreviewGameTemplate">
+            <Grid Margin="0,10">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <Border Width="32" Height="32" Background="#29393B" CornerRadius="10" HorizontalAlignment="Left"><TextBlock Text="&#xE7FC;" FontFamily="Segoe MDL2 Assets" Foreground="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="16" /></Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,18,0">
+                    <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding SavePath}" FontSize="11" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis" Margin="0,3,0,0" />
+                </StackPanel>
+                <Border Grid.Column="2" Style="{StaticResource StatusBadge}" Background="{Binding StatusBgBrush}" VerticalAlignment="Center"><TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="{Binding StatusBrush}" /></Border>
+                <Button Grid.Column="3" Style="{StaticResource QuietButton}" Click="OnPreviewHistory" Margin="12,0,0,0" Content="&#xE81C;" FontFamily="Segoe MDL2 Assets" ToolTip="{Binding [Shell.History], Source={x:Static loc:Localization.Instance}}" AutomationProperties.Name="{Binding [Shell.History], Source={x:Static loc:Localization.Instance}}" />
             </Grid>
         </DataTemplate>
     </Window.Resources>
 
-    <Grid Margin="14">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="150" />
-        </Grid.RowDefinitions>
 
-        <!-- Header -->
-        <Grid Grid.Row="0" Margin="2,0,2,12">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <Image Grid.Column="0" Source="/Assets/icon.ico" Width="40" Height="40" Margin="0,0,12,0" />
-            <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                <TextBlock Text="{Binding [Win.HeaderTitle], Source={x:Static loc:Localization.Instance}}" FontSize="19" FontWeight="Bold"
-                           Foreground="{StaticResource TextBrush}" />
-                <TextBlock Text="{Binding CloudStatusText}" FontSize="12" Margin="0,3,0,0"
-                           Foreground="{Binding CloudStatusBrush}" TextTrimming="CharacterEllipsis" />
+    <Border x:Name="WindowFrame" Background="{StaticResource ShellBrush}" BorderBrush="#3A5355" BorderThickness="1">
+        <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="228" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="58" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+            <!-- The caption region stays native-draggable; only real controls opt into hit testing. -->
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="24,0,0,0">
+                <Border Background="#203638" CornerRadius="10" Width="36" Height="32" Margin="0,0,10,0"><TextBlock Text="&#xE753;" FontFamily="Segoe MDL2 Assets" Foreground="{StaticResource PrimaryBrush}" FontSize="19" VerticalAlignment="Center" HorizontalAlignment="Center" /></Border>
+                <TextBlock Text="GameCloudSync" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
             </StackPanel>
-            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                <Button Content="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="16"
-                        Style="{StaticResource SecondaryButton}" Padding="10,6"
-                        ToolTip="{Binding [Btn.Settings], Source={x:Static loc:Localization.Instance}}"
-                        Click="OnSettings" Margin="0,0,10,0" />
-                <Border Background="{Binding MonitorStateBrush}" CornerRadius="10" Padding="12,4"
-                        VerticalAlignment="Center">
-                    <TextBlock Text="{Binding MonitorStateText}" FontSize="12" FontWeight="SemiBold"
-                               Foreground="White" />
-                </Border>
-            </StackPanel>
-        </Grid>
-
-        <!-- Toolbar: frequent actions + overflow -->
-        <Grid Grid.Row="1" Margin="0,0,0,10">
-            <StackPanel Orientation="Horizontal">
+            <Grid Grid.Column="1">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" Click="OnMinimizeWindow" AutomationProperties.Name="{Binding [Shell.Minimize], Source={x:Static loc:Localization.Instance}}" />
+                    <Button Style="{StaticResource CaptionButton}" Click="OnMaximizeWindow" AutomationProperties.Name="{Binding [Shell.Maximize], Source={x:Static loc:Localization.Instance}}">
+                        <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="12"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Text" Value="&#xE922;" /><Style.Triggers><DataTrigger Binding="{Binding WindowState, RelativeSource={RelativeSource AncestorType=Window}}" Value="Maximized"><Setter Property="Text" Value="&#xE923;" /></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock>
+                    </Button>
+                    <Button Style="{StaticResource CaptionButton}" Content="&#xE8BB;" Click="OnCloseWindow" AutomationProperties.Name="{Binding [Shell.Close], Source={x:Static loc:Localization.Instance}}" />
+                </StackPanel>
+            </Grid>
+            <Grid Grid.Column="0" Grid.Row="1" Margin="14,18,12,22">
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <StackPanel>
+                    <RadioButton GroupName="Navigation" Style="{StaticResource SidebarNav}" IsChecked="{Binding Dashboard.IsOverview, Mode=OneWay}" Checked="OnNavigateOverview">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE80F;" FontFamily="Segoe MDL2 Assets" FontSize="20" Margin="0,0,15,0" VerticalAlignment="Center" /><TextBlock Text="{Binding [Shell.Overview], Source={x:Static loc:Localization.Instance}}" /></StackPanel>
+                    </RadioButton>
+                    <RadioButton GroupName="Navigation" Style="{StaticResource SidebarNav}" IsChecked="{Binding Dashboard.IsLibrary, Mode=OneWay}" Checked="OnNavigateLibrary">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7FC;" FontFamily="Segoe MDL2 Assets" FontSize="20" Margin="0,0,15,0" VerticalAlignment="Center" /><TextBlock Text="{Binding [Shell.Library], Source={x:Static loc:Localization.Instance}}" /></StackPanel>
+                    </RadioButton>
+                    <RadioButton GroupName="Navigation" Style="{StaticResource SidebarNav}" IsChecked="{Binding Dashboard.IsActivity, Mode=OneWay}" Checked="OnNavigateActivity">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" FontSize="20" Margin="0,0,15,0" VerticalAlignment="Center" /><TextBlock Text="{Binding [Shell.Activity], Source={x:Static loc:Localization.Instance}}" /></StackPanel>
+                    </RadioButton>
+                </StackPanel>
+                <StackPanel Grid.Row="2">
+                    <StackPanel Margin="16,0,0,20">
+                        <StackPanel Orientation="Horizontal"><Ellipse Width="6" Height="6" Fill="{Binding MonitorStateBrush}" Margin="0,0,8,0" /><TextBlock Text="{Binding MonitorStateText}" FontSize="11" Foreground="{StaticResource TextSecBrush}" /></StackPanel>
+                        <TextBlock Text="{Binding [Shell.CloudBackup], Source={x:Static loc:Localization.Instance}}" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="14,6,0,0" />
+                    </StackPanel>
+                    <Border Height="1" Background="#42585B" Margin="6,0,6,12" />
+                    <Button Style="{StaticResource QuietButton}" HorizontalContentAlignment="Left" Click="OnSettings" Padding="16,12" HorizontalAlignment="Left">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="21" Margin="0,0,14,0" /><TextBlock Text="{Binding [Btn.Settings], Source={x:Static loc:Localization.Instance}}" FontSize="16" Foreground="{StaticResource TextBrush}" /></StackPanel>
+                    </Button>
+                </StackPanel>
+            </Grid>
+            <Grid Grid.Column="1" Grid.Row="1" Margin="28,8,30,28">
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <Grid Margin="0,0,0,26">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,18,0">
+                        <TextBlock Text="{Binding Dashboard.PageTitle}" FontSize="32" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding Dashboard.PageSubtitle}" Foreground="{StaticResource TextSecBrush}" FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" Style="{StaticResource QuietButton}" Click="OnRefresh" ToolTip="{Binding [Btn.Refresh], Source={x:Static loc:Localization.Instance}}" AutomationProperties.Name="{Binding [Btn.Refresh], Source={x:Static loc:Localization.Instance}}" />
+                        <Button x:Name="MoreButton" Content="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="18" Style="{StaticResource QuietButton}" Click="OnOpenMoreMenu" ToolTip="{Binding [Shell.DataTools], Source={x:Static loc:Localization.Instance}}" AutomationProperties.Name="{Binding [Shell.DataTools], Source={x:Static loc:Localization.Instance}}" />
+                    </StackPanel>
+                </Grid>
+                <Grid Grid.Row="1">
+                    <!-- OVERVIEW: every figure comes from the actual game collection. -->
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="{Binding Dashboard.IsOverview, Converter={x:Static vm:Converters.BoolToVisibility}}">
+                        <StackPanel Margin="0,0,4,0">
+                            <UniformGrid Columns="4" Margin="-8,0,-8,0">
+                                <Border Style="{StaticResource DashboardCard}" Margin="8,0" Height="208">
+                                    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                        <TextBlock Text="{Binding [Shell.Engine], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource TextSecBrush}" />
+                                        <Ellipse Width="8" Height="8" Fill="{Binding MonitorStateBrush}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                        <StackPanel Grid.Row="1" Margin="0,14,0,0"><TextBlock Text="{Binding Dashboard.EngineState}" FontSize="31" FontWeight="SemiBold" /><TextBlock Text="{Binding [Shell.MonitorHint], Source={x:Static loc:Localization.Instance}}" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" TextWrapping="Wrap" /></StackPanel>
+                                        <Button Grid.Row="2" Content="{Binding MonitorButtonText}" Style="{StaticResource QuietButton}" Foreground="{StaticResource PrimaryBrush}" Padding="0,5" HorizontalAlignment="Left" Click="OnToggleMonitoring" />
+                                    </Grid>
+                                </Border>
+                                <Border Style="{StaticResource DashboardCard}" Margin="8,0" Height="208">
+                                    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                        <TextBlock Text="{Binding [Shell.GameTotal], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource TextSecBrush}" />
+                                        <TextBlock Grid.Row="1" Text="{Binding Dashboard.TotalGames}" FontSize="48" FontWeight="SemiBold" Margin="0,10,0,0" />
+                                        <Button Grid.Row="2" Content="{Binding [Btn.AddGame], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource QuietButton}" Foreground="{StaticResource PrimaryBrush}" Padding="0,5" HorizontalAlignment="Left" Click="OnAddGame" />
+                                    </Grid>
+                                </Border>
+                                <Border Style="{StaticResource DashboardCard}" Margin="8,0" Height="208">
+                                    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                        <TextBlock Text="OneDrive" Foreground="{StaticResource TextSecBrush}" />
+                                        <StackPanel Grid.Row="1" Margin="0,19,0,0"><TextBlock Text="{Binding Dashboard.OneDriveState}" FontSize="23" FontWeight="SemiBold" /><TextBlock Text="{Binding Dashboard.OneDrivePath}" FontSize="11" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Dashboard.OneDrivePath}" Margin="0,10,0,0" /></StackPanel>
+                                        <Border Grid.Row="2" Height="3" Background="#8C7AE8" CornerRadius="1.5" />
+                                    </Grid>
+                                </Border>
+                                <Border Style="{StaticResource DashboardCard}" Margin="8,0" Height="208">
+                                    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                        <TextBlock Text="WebDAV" Foreground="{StaticResource TextSecBrush}" />
+                                        <StackPanel Grid.Row="1" Margin="0,19,0,0"><TextBlock Text="{Binding Dashboard.WebDavState}" FontSize="23" FontWeight="SemiBold" /><TextBlock Text="{Binding Dashboard.WebDavAddress}" FontSize="11" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Dashboard.WebDavAddress}" Margin="0,10,0,0" /></StackPanel>
+                                        <Border Grid.Row="2" Height="3" Background="{StaticResource PrimaryBrush}" CornerRadius="1.5" />
+                                    </Grid>
+                                </Border>
+                            </UniformGrid>
+                            <Grid Margin="0,18,0,18">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="18" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource DashboardCard}" Height="216">
+                                    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                        <TextBlock Text="{Binding [Shell.SyncOverview], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource TextSecBrush}" />
+                                        <StackPanel Grid.Row="1" Margin="0,12,0,10">
+                                            <TextBlock Text="{Binding Dashboard.SyncCaption}" FontSize="23" FontWeight="SemiBold" />
+                                            <ProgressBar Value="{Binding Dashboard.SyncPercent, Mode=OneWay}" Maximum="100" Style="{StaticResource SyncProgress}" Margin="0,15,0,0" />
+                                            <TextBlock Text="{Binding Dashboard.PausedCaption}" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,9,0,0" />
+                                        </StackPanel>
+                                        <UniformGrid Grid.Row="2" Columns="3">
+                                            <StackPanel><TextBlock Text="{Binding Dashboard.SyncedCount}" FontSize="24" Foreground="#6BE0B4" /><TextBlock Text="{Binding [Shell.Synced], Source={x:Static loc:Localization.Instance}}" FontSize="11" Foreground="{StaticResource MutedBrush}" /></StackPanel>
+                                            <StackPanel><TextBlock Text="{Binding Dashboard.LocalNewCount}" FontSize="24" Foreground="#F1CB8D" /><TextBlock Text="{Binding [Shell.NeedBackup], Source={x:Static loc:Localization.Instance}}" FontSize="11" Foreground="{StaticResource MutedBrush}" /></StackPanel>
+                                            <StackPanel><TextBlock Text="{Binding Dashboard.CloudNewCount}" FontSize="24" Foreground="#9AD7F1" /><TextBlock Text="{Binding [Shell.NeedRestore], Source={x:Static loc:Localization.Instance}}" FontSize="11" Foreground="{StaticResource MutedBrush}" /></StackPanel>
+                                        </UniformGrid>
+                                    </Grid>
+                                </Border>
+                                <Border Grid.Column="2" Style="{StaticResource DashboardCard}" Height="216">
+                                    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                        <TextBlock Text="{Binding [Shell.RecentActivity], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource TextSecBrush}" VerticalAlignment="Center" />
+                                        <Button Content="{Binding [Shell.ViewActivity], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource QuietButton}" FontSize="11" Padding="0,0" MinHeight="20" HorizontalAlignment="Right" Click="OnOpenActivity" />
+                                        <ItemsControl Grid.Row="1" ItemsSource="{Binding Dashboard.RecentLogs}" Margin="0,12,0,0">
+                                            <ItemsControl.ItemTemplate><DataTemplate><Grid Margin="0,6"><Grid.ColumnDefinitions><ColumnDefinition Width="14" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><Ellipse Width="4" Height="4" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Top" Margin="0,6,0,0" HorizontalAlignment="Left" /><TextBlock Grid.Column="1" Text="{Binding}" TextTrimming="CharacterEllipsis" Foreground="{StaticResource TextSecBrush}" ToolTip="{Binding}" FontSize="12" /></Grid></DataTemplate></ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                            <Border Style="{StaticResource DashboardCard}" MinHeight="200">
+                                <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                    <TextBlock Text="{Binding [Shell.Preview], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource TextSecBrush}" VerticalAlignment="Center" />
+                                    <Button Content="{Binding [Shell.ViewAll], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource QuietButton}" FontSize="11" HorizontalAlignment="Right" Padding="0,0" MinHeight="20" Click="OnOpenLibrary" />
+                                    <ItemsControl Grid.Row="1" ItemsSource="{Binding Dashboard.PreviewGames}" ItemTemplate="{StaticResource PreviewGameTemplate}" Margin="0,14,0,0" />
+                                    <StackPanel Grid.Row="1" VerticalAlignment="Center" Margin="0,28,0,4">
+                                        <StackPanel.Style><Style TargetType="StackPanel"><Setter Property="Visibility" Value="Collapsed" /><Style.Triggers><DataTrigger Binding="{Binding Dashboard.HasGames}" Value="False"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers></Style></StackPanel.Style>
+                                        <TextBlock Text="{Binding [Main.EmptyTitle], Source={x:Static loc:Localization.Instance}}" FontSize="21" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding [Main.EmptyHint], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,8,0,16" TextWrapping="Wrap" />
+                                        <Button Content="{Binding [Btn.AddGame], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource PrimaryButton}" Click="OnAddGame" HorizontalAlignment="Left" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+        <Grid Visibility="{Binding Dashboard.IsLibrary, Converter={x:Static vm:Converters.BoolToVisibility}}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" MinHeight="100" />
+            </Grid.RowDefinitions>
+            <Border Background="{StaticResource PrimarySoftBrush}" CornerRadius="10" Padding="14,11" Margin="0,0,0,16">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <TextBlock Text="&#xE753;" FontFamily="Segoe MDL2 Assets" FontSize="16" Foreground="{StaticResource PrimaryBrush}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                    <TextBlock Grid.Column="1" Text="{Binding CloudStatusText}" Foreground="{StaticResource TextSecBrush}" FontSize="12" TextTrimming="CharacterEllipsis" ToolTip="{Binding CloudStatusText}" VerticalAlignment="Center" />
+                </Grid>
+            </Border>
+                <Button Content="{Binding UpdateConfigButtonText}" Click="OnApplyCloudUpdate"
+                        Margin="0,0,0,12" HorizontalAlignment="Left" Grid.Row="1" IsEnabled="{Binding CanAct}"
+                        Visibility="{Binding HasPendingCloudUpdate, Converter={x:Static vm:Converters.BoolToVisibility}}"
+                        Style="{StaticResource AccentButton}" />
+            <StackPanel Grid.Row="2">
+                <Grid Margin="0,0,0,20">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <WrapPanel VerticalAlignment="Center">
                 <Button Style="{StaticResource PrimaryButton}" Click="OnAddGame" Margin="0,0,8,0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="13"
@@ -172,84 +290,57 @@
                                    Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
-            </StackPanel>
-
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="{Binding UpdateConfigButtonText}" Click="OnApplyCloudUpdate"
-                        Margin="0,0,8,0" IsEnabled="{Binding CanAct}"
-                        Visibility="{Binding HasPendingCloudUpdate, Converter={x:Static vm:Converters.BoolToVisibility}}"
-                        Style="{StaticResource AccentButton}" />
-                <Button x:Name="MoreButton" Style="{StaticResource SecondaryButton}" Click="OnOpenMoreMenu">
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="12"
-                                   VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding [Btn.More], Source={x:Static loc:Localization.Instance}}"
-                                   Margin="6,0,0,0" VerticalAlignment="Center" />
-                    </StackPanel>
-                </Button>
-            </StackPanel>
-        </Grid>
-
-        <!-- Game list -->
-        <Grid Grid.Row="2">
-            <ListBox x:Name="GameList"
-                     ItemsSource="{Binding Games}"
-                     ItemTemplate="{StaticResource GameCardTemplate}"
-                     SelectionMode="Extended"
-                     SelectionChanged="OnSelectionChanged"
-                     PreviewMouseRightButtonDown="OnListRightClick" />
-            <TextBlock Text="{Binding [Main.EmptyList], Source={x:Static loc:Localization.Instance}}"
-                       HorizontalAlignment="Center" VerticalAlignment="Center"
-                       FontSize="14" Foreground="{StaticResource MutedBrush}">
-                <TextBlock.Style>
-                    <Style TargetType="TextBlock">
-                        <Setter Property="Visibility" Value="Collapsed" />
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding Games.Count}" Value="0">
-                                <Setter Property="Visibility" Value="Visible" />
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </TextBlock.Style>
-            </TextBlock>
-        </Grid>
-
-        <!-- Log panel -->
-        <Border Grid.Row="3" Background="{StaticResource LogBgBrush}" CornerRadius="10" Margin="0,10,0,0">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-                <Grid Grid.Row="0" Margin="12,8,12,4">
-                    <TextBlock Text="{Binding [Main.LogTitle], Source={x:Static loc:Localization.Instance}}" FontSize="12" FontWeight="SemiBold"
-                               Foreground="{StaticResource LogFgBrush}" />
-                    <Button Content="{Binding [Btn.ClearLog], Source={x:Static loc:Localization.Instance}}" FontSize="11" HorizontalAlignment="Right" Padding="8,2"
-                            Background="#334155" Foreground="{StaticResource LogFgBrush}"
-                            BorderThickness="0" Cursor="Hand" Click="OnClearLog" />
+            </WrapPanel>
                 </Grid>
-                <ListBox x:Name="LogList" Grid.Row="1" ItemsSource="{Binding Logs}"
-                         Background="Transparent" BorderThickness="0"
-                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                         FontFamily="{StaticResource MonoFont}" FontSize="12"
-                         Foreground="{StaticResource LogFgBrush}"
-                         Margin="8,0,8,6" SelectionMode="Single">
-                    <ListBox.ItemContainerStyle>
-                        <Style TargetType="ListBoxItem">
-                            <Setter Property="Padding" Value="4,1" />
-                            <Setter Property="Background" Value="Transparent" />
-                            <Setter Property="BorderThickness" Value="0" />
-                            <Setter Property="Template">
-                                <Setter.Value>
-                                    <ControlTemplate TargetType="ListBoxItem">
-                                        <ContentPresenter />
-                                    </ControlTemplate>
-                                </Setter.Value>
-                            </Setter>
+                <Grid Margin="0,0,0,12">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding [Main.LibrarySection], Source={x:Static loc:Localization.Instance}}" FontSize="16" FontWeight="SemiBold" />
+                        <Border Background="{StaticResource BorderBrush}" CornerRadius="8" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding GameCountText}" FontSize="11" Foreground="{StaticResource TextSecBrush}" />
+                        </Border>
+                    </StackPanel>
+                    <TextBlock Text="{Binding [Main.SelectionHint], Source={x:Static loc:Localization.Instance}}" FontSize="11" Foreground="{StaticResource TextSecBrush}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                </Grid>
+            </StackPanel>
+            <Grid Grid.Row="3">
+                <ListBox x:Name="GameList" ItemsSource="{Binding Games}" ItemTemplate="{StaticResource GameCardTemplate}" SelectionMode="Extended" SelectionChanged="OnSelectionChanged" PreviewMouseRightButtonDown="OnListRightClick" IsEnabled="{Binding CanAct}" />
+                <Border Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="14">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers><DataTrigger Binding="{Binding Games.Count}" Value="0"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers>
                         </Style>
-                    </ListBox.ItemContainerStyle>
-                </ListBox>
+                    </Border.Style>
+                    <Grid VerticalAlignment="Center" HorizontalAlignment="Center" Margin="20">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <Border Background="{StaticResource PrimarySoftBrush}" CornerRadius="20" Width="64" Height="64" VerticalAlignment="Center" Margin="0,0,24,0">
+                            <TextBlock Text="&#xE753;" FontFamily="Segoe MDL2 Assets" FontSize="30" Foreground="{StaticResource PrimaryBrush}" VerticalAlignment="Center" HorizontalAlignment="Center" />
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding [Main.EmptyTitle], Source={x:Static loc:Localization.Instance}}" FontSize="18" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding [Main.EmptyHint], Source={x:Static loc:Localization.Instance}}" FontSize="12" Foreground="{StaticResource TextSecBrush}" MaxWidth="400" Margin="0,6,0,12" TextWrapping="Wrap" />
+                        <Button Content="{Binding [Btn.AddGame], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource PrimaryButton}" Click="OnAddGame" HorizontalAlignment="Left" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
             </Grid>
-        </Border>
-    </Grid>
+        </Grid>
+                    <Border Style="{StaticResource DashboardCard}" Visibility="{Binding Dashboard.IsActivity, Converter={x:Static vm:Converters.BoolToVisibility}}">
+                        <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <StackPanel Margin="0,0,100,20"><TextBlock Text="{Binding [Main.LogTitle], Source={x:Static loc:Localization.Instance}}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{Binding [Shell.SessionOnly], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,8,0,0" /></StackPanel>
+                            <Button Content="{Binding [Btn.ClearLog], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}" Click="OnClearLog" HorizontalAlignment="Right" VerticalAlignment="Top" />
+                            <ListBox x:Name="LogList" Grid.Row="1" ItemsSource="{Binding Logs}" FontFamily="{StaticResource MonoFont}" FontSize="12" Foreground="{StaticResource TextSecBrush}" Background="Transparent" BorderThickness="0" SelectionMode="Single">
+                                <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" /></DataTemplate></ListBox.ItemTemplate>
+                                <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="Padding" Value="0,10" /><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem"><Border BorderBrush="#2D3839" BorderThickness="0,0,0,1" Padding="{TemplateBinding Padding}"><ContentPresenter /></Border></ControlTemplate></Setter.Value></Setter></Style></ListBox.ItemContainerStyle>
+                            </ListBox>
+                            <TextBlock Grid.Row="1" Text="{Binding [Shell.NoActivity], Source={x:Static loc:Localization.Instance}}" FontSize="15" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed" /><Style.Triggers><DataTrigger Binding="{Binding Dashboard.HasLogs}" Value="False"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers></Style></TextBlock.Style>
+                            </TextBlock>
+                            <Grid Grid.Row="2" Margin="0,18,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><TextBlock Text="{Binding [Shell.BackupGuide], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource MutedBrush}" FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,20,0" /><Button Grid.Column="1" Content="{Binding [Shell.OpenLibrary], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}" Click="OnOpenLibrary" /></Grid>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Grid>
+    </Border>
 </Window>
