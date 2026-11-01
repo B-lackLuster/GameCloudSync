@@ -36,12 +36,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         FitToWorkArea();
+        CustomFrame.Attach(this);
         _vm = viewModel;
         _tray = tray;
         DataContext = viewModel;
-        StateChanged += (_, _) => WindowFrame.Margin = WindowState == WindowState.Maximized
-            ? new Thickness(SystemParameters.WindowResizeBorderThickness.Left + 2)
-            : new Thickness(0);
         viewModel.Logs.CollectionChanged += OnLogsChanged;
         viewModel.ResolveConflict = ResolveConflictAsync;
         Closing += OnWindowClosing;

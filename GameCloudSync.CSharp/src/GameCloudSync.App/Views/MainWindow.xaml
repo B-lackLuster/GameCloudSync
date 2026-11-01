@@ -8,8 +8,10 @@
         Title="{Binding [Win.Title], Source={x:Static loc:Localization.Instance}}"
         Width="1280" Height="820" MinWidth="900" MinHeight="520"
         WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterScreen" Icon="/Assets/icon.ico">
+    <!-- A glass frame of zero makes WindowChrome clip the window to a plain rectangle, which stops Windows 11 from
+         rounding its corners; one pixel (hidden under the opaque content) keeps the system frame, its rounding and shadow. -->
     <shell:WindowChrome.WindowChrome>
-        <shell:WindowChrome CaptionHeight="52" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+        <shell:WindowChrome CaptionHeight="52" ResizeBorderThickness="6" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False" />
     </shell:WindowChrome.WindowChrome>
     <Window.Resources>
         <ContextMenu x:Key="GameContextMenu">
@@ -87,7 +89,10 @@
     </Window.Resources>
 
 
-    <Border x:Name="WindowFrame" Background="{StaticResource ShellBrush}" BorderBrush="#3A5355" BorderThickness="1">
+    <!-- The system frame leaves the window surface transparent, where WPF would draw text without ClearType;
+         this opaque border covers the whole window, so ClearType is safe again. -->
+    <Border x:Name="WindowFrame" Background="{StaticResource ShellBrush}" BorderBrush="#3A5355" BorderThickness="1"
+            RenderOptions.ClearTypeHint="Enabled">
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="228" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
             <Grid.RowDefinitions><RowDefinition Height="58" /><RowDefinition Height="*" /></Grid.RowDefinitions>
