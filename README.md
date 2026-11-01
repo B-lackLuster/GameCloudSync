@@ -24,9 +24,9 @@
 需要 .NET SDK 9：
 
 ```powershell
-dotnet build GameCloudSync.sln
-dotnet test GameCloudSync.sln
-dotnet publish src/GameCloudSync.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish
+dotnet build GameCloudSync.CSharp/GameCloudSync.sln
+dotnet test GameCloudSync.CSharp/GameCloudSync.sln
+dotnet publish GameCloudSync.CSharp/src/GameCloudSync.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o GameCloudSync.CSharp/publish
 ```
 
 ## 兼容性
