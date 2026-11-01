@@ -84,8 +84,55 @@ public class ConfigStoreTests : IDisposable
     public void Load_CorruptedFile_FallsBackToDefaults()
     {
         File.WriteAllText(Path.Combine(_dir, Constants.ConfigFileName), "{ not json", new UTF8Encoding(false));
-        var config = new ConfigStore(_dir).Load();
+        var store = new ConfigStore(_dir);
+        var config = store.Load();
         Assert.Empty(config.Games);
         Assert.Equal("", config.CloudRoot);
+        // The broken file is kept for manual recovery instead of being overwritten later.
+        Assert.False(store.RecoveredFromBackup);
+        Assert.Equal("{ not json", File.ReadAllText(store.CorruptConfigPath!));
+    }
+
+    [Fact]
+    public void Load_CorruptedFile_RecoversLastSavedConfig()
+    {
+        var store = new ConfigStore(_dir);
+        store.Save(new AppConfig { Games = { new GameConfig { Name = "A", Save = @"C:\A" } } });
+        store.Save(new AppConfig { Games = { new GameConfig { Name = "A", Save = @"C:\A" }, new GameConfig { Name = "B", Save = @"C:\B" } } });
+        File.WriteAllText(store.ConfigPath, """{ "games": [ { "name": "A", }, ] """, new UTF8Encoding(false));
+
+        var reloaded = new ConfigStore(_dir);
+        var config = reloaded.Load();
+
+        Assert.True(reloaded.RecoveredFromBackup);
+        Assert.Equal(new[] { "A", "B" }, config.Games.Select(g => g.Name));
+        Assert.Equal(2, new ConfigStore(_dir).Load().Games.Count);
+        Assert.Contains("\"name\": \"A\", }", File.ReadAllText(reloaded.CorruptConfigPath!));
+    }
+
+    [Fact]
+    public void Load_LockedFile_IsNotMistakenForCorruption()
+    {
+        var store = new ConfigStore(_dir);
+        store.Save(new AppConfig { Games = { new GameConfig { Name = "A", Save = @"C:\A" } } });
+
+        using (new FileStream(store.ConfigPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.ThrowsAny<IOException>(() => store.Load());
+        }
+
+        Assert.Null(store.CorruptConfigPath);
+        Assert.Single(store.Load().Games);
+    }
+
+    [Fact]
+    public void Load_NullGameEntry_IsDroppedNotFatal()
+    {
+        File.WriteAllText(Path.Combine(_dir, Constants.ConfigFileName),
+            """{ "games": [ null, { "name": "A", "save": "C:\\A" } ] }""", new UTF8Encoding(false));
+        var store = new ConfigStore(_dir);
+
+        Assert.Equal("A", Assert.Single(store.Load().Games).Name);
+        Assert.Null(store.CorruptConfigPath);
     }
 }

@@ -4,9 +4,10 @@ A Windows desktop app that monitors game saves and backs them up to OneDrive and
 
 ## Features
 
-- Auto backup on save changes (cooldown + mtime dedupe)
+- Auto backup on save changes (after the folder goes quiet; changes during a backup are queued; unchanged saves are skipped)
 - OneDrive / WebDAV backup and restore
 - Backup history: browse, restore, delete, batch download
+- Pre-restore snapshots of the local save; backups are published only once complete, so failures leave no partial backup
 - Cloud config backup, new-game detection, one-click merge
 - Tray icon, auto-start, single-instance wake-up
 - WebDAV password encrypted with DPAPI

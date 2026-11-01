@@ -2,6 +2,7 @@ using System.Windows;
 using GameCloudSync.Core;
 using GameCloudSync.Core.Models;
 using GameCloudSync.Core.Services;
+using GameCloudSync.Core.Util;
 using Microsoft.Win32;
 using Localization = GameCloudSync.Core.Services.Localization;
 
@@ -64,6 +65,15 @@ public partial class AddGameDialog : Window
         {
             MessageBox.Show(this, Localization.T("Add.FillRequired"), Localization.T("Common.Error"),
                 MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        var nameError = GameNames.Validate(name, _config.Games);
+        if (nameError != GameNameError.None)
+        {
+            MessageBox.Show(this, GameNames.Describe(nameError, name), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            NameBox.Focus();
+            NameBox.SelectAll();
             return;
         }
         var methods = new List<string>();

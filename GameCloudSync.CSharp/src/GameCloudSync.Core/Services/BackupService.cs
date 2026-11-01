@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using GameCloudSync.Core.Models;
 using GameCloudSync.Core.Util;
 
@@ -5,12 +6,21 @@ namespace GameCloudSync.Core.Services;
 
 public sealed class BackupService
 {
-    private readonly Func<string, string, WebDavClient> _webDavFactory;
+    private const string SnapshotPrefix = "pre-restore_";
+    private static readonly TimeSpan StaleIncompleteAge = TimeSpan.FromHours(24);
 
-    public BackupService(Func<string, string, WebDavClient>? webDavFactory = null)
+    // WebDAV servers that rejected MOVE; backups to them are uploaded in place.
+    private static readonly ConcurrentDictionary<string, bool> MoveUnsupported = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly Func<string, string, WebDavClient> _webDavFactory;
+    private readonly string? _snapshotRoot;
+
+    /// <param name="snapshotRoot">Where the local save is kept before a restore overwrites it; null disables snapshots.</param>
+    public BackupService(Func<string, string, WebDavClient>? webDavFactory = null, string? snapshotRoot = null)
     {
         _webDavFactory = webDavFactory
             ?? ((url, password) => new WebDavClient(url, "", password));
+        _snapshotRoot = snapshotRoot;
     }
 
     // ---------------- Backup ----------------
@@ -24,53 +34,173 @@ public sealed class BackupService
     {
         var success = new List<string>();
         var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var toOneDrive = game.HasMethod(Constants.MethodOneDrive) && !string.IsNullOrEmpty(config.CloudRoot);
+        var toWebDav = game.HasMethod(Constants.MethodWebDav) && !string.IsNullOrEmpty(config.WebDavUrl);
 
-        // OneDrive (a local cloud folder)
-        if (game.HasMethod(Constants.MethodOneDrive) && !string.IsNullOrEmpty(config.CloudRoot))
+        // An upload can take minutes, so WebDAV reads from a private copy: the game's own files
+        // are only read for the length of one local copy and never held open during the upload.
+        string? snapshot = null;
+        try
         {
-            try
+            if (toWebDav)
             {
-                var backupFolder = $"save_{timestamp}";
-                var target = Path.Combine(config.CloudRoot, game.Name, backupFolder);
-                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                await FileUtil.CopyDirectoryAsync(game.Save, target, ct);
-                await CleanupOneDriveBackupsAsync(game.Name, config.CloudRoot, game.MaxBackups, ct);
-                success.Add("OneDrive");
-            }
-            catch (Exception ex)
-            {
-                log($"[{DateTime.Now:HH:mm:ss}] {Localization.T("Log.BackupFailed", game.Name, "OneDrive", ex.Message)}");
-            }
-        }
-
-        // WebDAV
-        if (game.HasMethod(Constants.MethodWebDav) && !string.IsNullOrEmpty(config.WebDavUrl))
-        {
-            try
-            {
-                var localMtime = FileUtil.GetLatestMTime(game.Save);
-                var backupFolder = $"save_{timestamp}_mtime{localMtime}";
-                var remoteDir = $"{game.Name}/{backupFolder}";
-                using var wc = _webDavFactory(config.WebDavUrl, webDavPassword);
-                if (await wc.UploadDirAsync(game.Save, remoteDir, ct))
+                snapshot = Path.Combine(Path.GetTempPath(), $"gcs_snapshot_{Guid.NewGuid():N}");
+                try
                 {
-                    await CleanupWebDavBackupsAsync(wc, game.Name, game.MaxBackups, ct);
+                    if (!await FileUtil.CopyDirectoryConsistentAsync(game.Save, snapshot, ct))
+                        log(Localization.T("Log.BackupUnstable", game.Name));
+                }
+                catch (Exception ex)
+                {
+                    log(Localization.T("Log.BackupFailed", game.Name, toOneDrive ? "OneDrive, WebDAV" : "WebDAV", ex.Message));
+                    return success;
+                }
+            }
+
+            if (toOneDrive)
+            {
+                try
+                {
+                    await PublishToOneDriveAsync(game, config.CloudRoot, snapshot, timestamp, log, ct);
+                    success.Add("OneDrive");
+                }
+                catch (Exception ex)
+                {
+                    log(Localization.T("Log.BackupFailed", game.Name, "OneDrive", ex.Message));
+                }
+                if (success.Contains("OneDrive"))
+                {
+                    try
+                    {
+                        await CleanupOneDriveBackupsAsync(game.Name, config.CloudRoot, game.MaxBackups, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        log(Localization.T("Log.CleanupFailed", game.Name, "OneDrive", ex.Message));
+                    }
+                }
+            }
+
+            if (toWebDav)
+            {
+                using var wc = _webDavFactory(config.WebDavUrl, webDavPassword);
+                try
+                {
+                    await PublishToWebDavAsync(wc, game.Name, config.WebDavUrl, snapshot!, timestamp, log, ct);
                     success.Add("WebDAV");
                 }
-                else
+                catch (Exception ex)
                 {
-                    log($"[{DateTime.Now:HH:mm:ss}] {Localization.T("Log.WebDavUploadFailed", game.Name)}");
+                    log(Localization.T("Log.BackupFailed", game.Name, "WebDAV", ex.Message));
+                }
+                if (success.Contains("WebDAV"))
+                {
+                    try
+                    {
+                        await CleanupWebDavBackupsAsync(wc, game.Name, game.MaxBackups, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        log(Localization.T("Log.CleanupFailed", game.Name, "WebDAV", ex.Message));
+                    }
                 }
             }
-            catch (Exception ex)
+        }
+        finally
+        {
+            if (snapshot is not null)
             {
-                log($"[{DateTime.Now:HH:mm:ss}] {Localization.T("Log.BackupFailed", game.Name, "WebDAV", ex.Message)}");
+                try { FileUtil.DeleteDirectorySafe(snapshot); } catch { /* temp folder, best effort */ }
             }
         }
 
         if (success.Count > 0)
-            log($"[{DateTime.Now:HH:mm:ss}] {Localization.T("Log.BackupSucceeded", game.Name, string.Join(", ", success))}");
+            log(Localization.T("Log.BackupSucceeded", game.Name, string.Join(", ", success)));
         return success;
+    }
+
+    private static async Task PublishToOneDriveAsync(GameConfig game, string cloudRoot, string? snapshot,
+        string timestamp, Action<string> log, CancellationToken ct)
+    {
+        var gameCloudDir = Path.Combine(cloudRoot, game.Name);
+        Directory.CreateDirectory(gameCloudDir);
+        var finalName = $"save_{timestamp}";
+        for (var n = 2; Directory.Exists(Path.Combine(gameCloudDir, finalName)); n++)
+            finalName = $"save_{timestamp}_{n}";
+
+        // Written under a name that listings ignore and renamed once complete, so a failed or
+        // interrupted backup can never be mistaken for the newest save.
+        var incomplete = Path.Combine(gameCloudDir, Constants.IncompleteBackupPrefix + finalName);
+        try
+        {
+            if (snapshot is not null)
+                await FileUtil.CopyDirectoryAsync(snapshot, incomplete, ct);
+            else if (!await FileUtil.CopyDirectoryConsistentAsync(game.Save, incomplete, ct))
+                log(Localization.T("Log.BackupUnstable", game.Name));
+            Directory.Move(incomplete, Path.Combine(gameCloudDir, finalName));
+        }
+        catch
+        {
+            try { FileUtil.DeleteDirectorySafe(incomplete); } catch { /* stale leftovers are swept by cleanup */ }
+            throw;
+        }
+    }
+
+    private static async Task PublishToWebDavAsync(WebDavClient wc, string gameName, string serverUrl, string source,
+        string timestamp, Action<string> log, CancellationToken ct)
+    {
+        var backupName = $"save_{timestamp}_mtime{FileUtil.GetLatestMTime(source)}";
+        var finalDir = $"{gameName}/{backupName}";
+        if (MoveUnsupported.ContainsKey(serverUrl))
+        {
+            await UploadInPlaceAsync(wc, source, finalDir, ct);
+            return;
+        }
+
+        var incompleteDir = $"{gameName}/{Constants.IncompleteBackupPrefix}{backupName}";
+        var moved = false;
+        try
+        {
+            await UploadOrThrowAsync(wc, source, incompleteDir, ct);
+            var status = await wc.MoveAsync(incompleteDir, finalDir, collection: true, overwrite: true, ct);
+            if (status is 201 or 204)
+            {
+                moved = true;
+                return;
+            }
+            // No server-side rename: fall back to uploading in place, as older versions did.
+            if (status is not (429 or 503 or 504))
+                MoveUnsupported[serverUrl] = true;
+            log(Localization.T("Log.WebDavMoveFallback", status));
+            await UploadInPlaceAsync(wc, source, finalDir, ct);
+        }
+        finally
+        {
+            if (!moved)
+            {
+                try { await wc.DeleteCollectionAsync(incompleteDir, CancellationToken.None); } catch { /* swept by cleanup */ }
+            }
+        }
+    }
+
+    private static async Task UploadInPlaceAsync(WebDavClient wc, string source, string finalDir, CancellationToken ct)
+    {
+        try
+        {
+            await UploadOrThrowAsync(wc, source, finalDir, ct);
+        }
+        catch
+        {
+            // Without MOVE the only protection is removing what was half uploaded.
+            try { await wc.DeleteCollectionAsync(finalDir, CancellationToken.None); } catch { /* best effort */ }
+            throw;
+        }
+    }
+
+    private static async Task UploadOrThrowAsync(WebDavClient wc, string source, string remoteDir, CancellationToken ct)
+    {
+        if (!await wc.UploadDirAsync(source, remoteDir, ct))
+            throw new IOException(Localization.T("Err.WebDavUploadIncomplete"));
     }
 
     // ---------------- Restore ----------------
@@ -83,8 +213,8 @@ public sealed class BackupService
         CancellationToken ct = default)
     {
         var backupPath = Path.Combine(config.CloudRoot, game.Name, backupName);
-        await FileUtil.RestoreDirectoryAsync(game.Save,
-            staging => FileUtil.CopyDirectoryAsync(backupPath, staging, ct), ct);
+        await RestoreWithSnapshotAsync(game, log, () => FileUtil.RestoreDirectoryAsync(game.Save,
+            staging => FileUtil.CopyDirectoryAsync(backupPath, staging, ct), ct), ct);
         log(Localization.T("Log.RestoreOdDone", game.Name, backupName));
     }
 
@@ -100,15 +230,164 @@ public sealed class BackupService
         var remoteDir = $"{game.Name}/{backupName}";
         log(Localization.T("Log.RestoreWdStart", remoteDir));
         var count = 0;
-        await FileUtil.RestoreDirectoryAsync(game.Save, async staging =>
+        await RestoreWithSnapshotAsync(game, log, () => FileUtil.RestoreDirectoryAsync(game.Save, async staging =>
         {
             count = await wc.DownloadDirAsync(remoteDir, staging, ct);
             if (count == 0)
                 throw new InvalidOperationException(Localization.T("Log.RestoreWdEmpty", remoteDir));
             FileUtil.ApplyBackupMTime(backupName, staging);
-        }, ct);
+        }, ct), ct);
         log(Localization.T("Log.RestoreWdDone", count));
         log(Localization.T("Log.RestoreWdDoneFull", game.Name, backupName));
+    }
+
+    // ---------------- Pre-restore snapshots ----------------
+
+    public IReadOnlyList<RestoreSnapshot> ListRestoreSnapshots(GameConfig game)
+    {
+        var dir = SnapshotDirFor(game);
+        if (dir is null || !Directory.Exists(dir))
+            return Array.Empty<RestoreSnapshot>();
+        return Directory.EnumerateDirectories(dir, SnapshotPrefix + "*")
+            .OrderByDescending(Path.GetFileName, StringComparer.Ordinal)
+            .Select(path => new RestoreSnapshot(path, SnapshotTime(path), FileUtil.GetFolderSize(path)))
+            .ToList();
+    }
+
+    public async Task RestoreFromSnapshotAsync(GameConfig game, string snapshotPath, Action<string> log,
+        CancellationToken ct = default)
+    {
+        // The current save is snapshotted too, so undoing a restore can itself be undone.
+        await RestoreWithSnapshotAsync(game, log, () => FileUtil.RestoreDirectoryAsync(game.Save,
+            staging => FileUtil.CopyDirectoryAsync(snapshotPath, staging, ct), ct), ct);
+        log(Localization.T("Log.SnapshotRestored", game.Name, Path.GetFileName(snapshotPath)));
+    }
+
+    private async Task RestoreWithSnapshotAsync(GameConfig game, Action<string> log, Func<Task> restore,
+        CancellationToken ct)
+    {
+        var snapshot = await CreateRestoreSnapshotAsync(game, ct);
+        try
+        {
+            await restore();
+        }
+        catch
+        {
+            // A failed restore leaves the save in place, so its snapshot is redundant — unless
+            // the save folder is gone, in which case the snapshot is the only copy left.
+            if (snapshot is not null && Directory.Exists(game.Save))
+            {
+                try { FileUtil.DeleteDirectorySafe(snapshot); } catch { /* best effort */ }
+            }
+            throw;
+        }
+        if (snapshot is null)
+            return;
+        log(Localization.T("Log.SnapshotSaved", game.Name, snapshot));
+        PruneSnapshots(game);
+    }
+
+    private async Task<string?> CreateRestoreSnapshotAsync(GameConfig game, CancellationToken ct)
+    {
+        var dir = SnapshotDirFor(game);
+        if (dir is null || !FileUtil.HasAnyFile(game.Save))
+            return null;
+        var path = Path.Combine(dir, $"{SnapshotPrefix}{DateTime.Now:yyyyMMdd_HHmmss_fff}");
+        try
+        {
+            await FileUtil.CopyDirectoryAsync(game.Save, path, ct);
+            return path;
+        }
+        catch (Exception ex)
+        {
+            try { FileUtil.DeleteDirectorySafe(path); } catch { /* best effort */ }
+            throw new IOException(Localization.T("Err.SnapshotFailed", ex.Message), ex);
+        }
+    }
+
+    private void PruneSnapshots(GameConfig game)
+    {
+        foreach (var old in ListRestoreSnapshots(game).Skip(Constants.MaxRestoreSnapshots))
+        {
+            try { FileUtil.DeleteDirectorySafe(old.Path); } catch { /* retried on the next restore */ }
+        }
+    }
+
+    private string? SnapshotDirFor(GameConfig game) =>
+        _snapshotRoot is null ? null : Path.Combine(_snapshotRoot, SafeFolderName(game.Name));
+
+    private static DateTime SnapshotTime(string path)
+    {
+        var stamp = Path.GetFileName(path)[SnapshotPrefix.Length..];
+        return DateTime.TryParseExact(stamp, "yyyyMMdd_HHmmss_fff", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out var created)
+            ? created
+            : Directory.GetCreationTime(path);
+    }
+
+    private static string SafeFolderName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var safe = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).TrimEnd('.', ' ');
+        return safe.Length == 0 ? "_" : safe;
+    }
+
+    // ---------------- Rename ----------------
+
+    /// <summary>
+    /// Moves a game's backup folders after the game was renamed, because backups are stored
+    /// under the game name. Returns a description of every target that could not be renamed.
+    /// </summary>
+    public async Task<List<string>> RenameGameStorageAsync(
+        string oldName,
+        string newName,
+        AppConfig config,
+        string webDavPassword,
+        CancellationToken ct = default)
+    {
+        var failures = new List<string>();
+        // Windows folders ignore case, so a case-only rename needs no move on OneDrive.
+        if (!string.IsNullOrEmpty(config.CloudRoot) && !string.Equals(oldName, newName, StringComparison.OrdinalIgnoreCase))
+        {
+            var from = Path.Combine(config.CloudRoot, oldName);
+            var to = Path.Combine(config.CloudRoot, newName);
+            if (Directory.Exists(from))
+            {
+                if (Directory.Exists(to))
+                {
+                    failures.Add(Localization.T("Rename.TargetExists", "OneDrive", to));
+                }
+                else
+                {
+                    try
+                    {
+                        Directory.Move(from, to);
+                    }
+                    catch (Exception ex)
+                    {
+                        failures.Add(Localization.T("Rename.Failed", "OneDrive", ex.Message));
+                    }
+                }
+            }
+        }
+
+        if (!string.IsNullOrEmpty(config.WebDavUrl) && !string.Equals(oldName, newName, StringComparison.Ordinal))
+        {
+            try
+            {
+                using var wc = _webDavFactory(config.WebDavUrl, webDavPassword);
+                var status = await wc.MoveAsync(oldName, newName, collection: true, overwrite: false, ct);
+                if (status == 412)
+                    failures.Add(Localization.T("Rename.TargetExists", "WebDAV", newName));
+                else if (status is not (201 or 204 or 404))
+                    failures.Add(Localization.T("Rename.Failed", "WebDAV", $"HTTP {status}"));
+            }
+            catch (Exception ex)
+            {
+                failures.Add(Localization.T("Rename.Failed", "WebDAV", ex.Message));
+            }
+        }
+        return failures;
     }
 
     // ---------------- Listing ----------------
@@ -249,13 +528,15 @@ public sealed class BackupService
         return new SyncStatus(Localization.T("Status.Synced"), SyncStatusKind.Synced);
     }
 
+    /// <param name="preference">Overrides <see cref="AppConfig.DefaultDownloadSource"/> for this lookup.</param>
     public async Task<BackupSource?> FindLatestSourceAsync(
         GameConfig game,
         AppConfig config,
         string webDavPassword,
+        string? preference = null,
         CancellationToken ct = default)
     {
-        var pref = config.DefaultDownloadSource;
+        var pref = preference ?? config.DefaultDownloadSource;
         BackupSource? odBest = null;
         long odTs = 0;
         BackupSource? wdBest = null;
@@ -277,16 +558,8 @@ public sealed class BackupService
             var backups = await ListWebDavBackupsAsync(game, config, webDavPassword, ct);
             if (backups.Count > 0)
             {
-                var (ts, bkMtime) = BackupName.Parse(backups[0].Name);
-                if (bkMtime > 0)
-                {
-                    wdTs = bkMtime;
-                }
-                else if (BackupName.ToDateTime(ts) is { } dt)
-                {
-                    wdTs = new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Local)).ToUnixTimeSeconds();
-                }
                 wdBest = new BackupSource("WebDAV", Constants.MethodWebDav, backups[0].Name);
+                wdTs = GetBackupMTime(wdBest);
             }
         }
 
@@ -299,6 +572,19 @@ public sealed class BackupService
         return wdBest ?? odBest;
     }
 
+    /// <summary>The newest save time a backup holds: its files' mtime, else the time encoded in its name.</summary>
+    public static long GetBackupMTime(BackupSource source)
+    {
+        if (source.Method == Constants.MethodOneDrive)
+            return FileUtil.GetLatestMTime(source.Path);
+        var (ts, mtime) = BackupName.Parse(source.Path);
+        if (mtime > 0)
+            return mtime;
+        return BackupName.ToDateTime(ts) is { } dt
+            ? new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Local)).ToUnixTimeSeconds()
+            : 0;
+    }
+
     // ---------------- Cleanup ----------------
 
     public Task CleanupOneDriveBackupsAsync(string gameName, string cloudRoot, int maxBackups, CancellationToken ct = default)
@@ -308,6 +594,15 @@ public sealed class BackupService
         var gameCloudDir = Path.Combine(cloudRoot, gameName);
         if (!Directory.Exists(gameCloudDir))
             return Task.CompletedTask;
+
+        // Leftovers of backups that were interrupted (crash, power loss) long ago.
+        foreach (var stale in Directory.EnumerateDirectories(gameCloudDir, Constants.IncompleteBackupPrefix + "*")
+                     .Where(d => DateTime.UtcNow - Directory.GetLastWriteTimeUtc(d) > StaleIncompleteAge)
+                     .ToList())
+        {
+            try { FileUtil.DeleteDirectorySafe(stale); } catch { /* retried next time */ }
+        }
+
         var backups = Directory.EnumerateDirectories(gameCloudDir)
             .Where(d => Path.GetFileName(d).StartsWith("save_", StringComparison.Ordinal))
             .OrderBy(SafeDirMTime)
@@ -326,6 +621,11 @@ public sealed class BackupService
         if (maxBackups <= 0)
             maxBackups = Constants.DefaultMaxBackups;
         var items = await wc.PropFindAsync(gameName, ct: ct);
+        foreach (var stale in items.Select(i => i.Name).Where(IsStaleIncomplete).ToList())
+        {
+            try { await wc.DeleteCollectionAsync($"{gameName}/{stale}", ct); } catch { /* retried next time */ }
+        }
+
         var names = items.Where(i => i.Name.StartsWith("save_", StringComparison.Ordinal))
             .Select(i => i.Name)
             .OrderByDescending(n => n)
@@ -335,6 +635,14 @@ public sealed class BackupService
             ct.ThrowIfCancellationRequested();
             await wc.DeletePathAsync($"{gameName}/{names[i]}", ct);
         }
+    }
+
+    private static bool IsStaleIncomplete(string name)
+    {
+        if (!name.StartsWith(Constants.IncompleteBackupPrefix, StringComparison.Ordinal))
+            return false;
+        var (ts, _) = BackupName.Parse(name[Constants.IncompleteBackupPrefix.Length..]);
+        return BackupName.ToDateTime(ts) is { } started && DateTime.Now - started > StaleIncompleteAge;
     }
 
     private static long SafeDirMTime(string dir)

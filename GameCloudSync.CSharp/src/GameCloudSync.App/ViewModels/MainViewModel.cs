@@ -89,6 +89,20 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public bool CanAct => !IsBusy;
+
+    public async Task RunBusyAsync(Func<Task> work)
+    {
+        IsBusy = true;
+        try
+        {
+            await work();
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     public string GameCountText => Localization.T("Main.GameCount", Games.Count);
 
     public bool HasPendingCloudUpdate
@@ -295,15 +309,12 @@ public sealed class MainViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            if (source.Method == Constants.MethodOneDrive)
-                await _backupService.RestoreFromOneDriveAsync(item.Game, Path.GetFileName(source.Path), _config, AppendLog);
-            else
-                await _backupService.RestoreFromWebDavAsync(item.Game, source.Path, _config, _webDavPassword, AppendLog);
+            await WithMonitoringPausedAsync(() => source.Method == Constants.MethodOneDrive
+                ? _backupService.RestoreFromOneDriveAsync(item.Game, Path.GetFileName(source.Path), _config, AppendLog)
+                : _backupService.RestoreFromWebDavAsync(item.Game, source.Path, _config, _webDavPassword, AppendLog));
         }
         finally
         {
-            // Replacing a save folder leaves FileSystemWatcher attached to the old directory.
-            _monitoring.RestartIfActive();
             IsBusy = false;
             await RefreshGamesAsync();
         }
@@ -314,16 +325,49 @@ public sealed class MainViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            if (webDav)
-                await _backupService.RestoreFromWebDavAsync(item.Game, backupName, _config, _webDavPassword, AppendLog);
-            else
-                await _backupService.RestoreFromOneDriveAsync(item.Game, backupName, _config, AppendLog);
+            await WithMonitoringPausedAsync(() => webDav
+                ? _backupService.RestoreFromWebDavAsync(item.Game, backupName, _config, _webDavPassword, AppendLog)
+                : _backupService.RestoreFromOneDriveAsync(item.Game, backupName, _config, AppendLog));
         }
         finally
         {
-            _monitoring.RestartIfActive();
             IsBusy = false;
             await RefreshGamesAsync();
+        }
+    }
+
+    public async Task RestoreFromSnapshotAsync(GameItemViewModel item, string snapshotPath)
+    {
+        IsBusy = true;
+        try
+        {
+            await WithMonitoringPausedAsync(() =>
+                _backupService.RestoreFromSnapshotAsync(item.Game, snapshotPath, AppendLog));
+        }
+        finally
+        {
+            IsBusy = false;
+            await RefreshGamesAsync();
+        }
+    }
+
+    /// <summary>
+    /// Restores replace the save folder, so no watcher may stay attached to the old one;
+    /// watchers are recreated on the new folder afterwards (pending changes carry over).
+    /// </summary>
+    private async Task WithMonitoringPausedAsync(Func<Task> restore)
+    {
+        var wasMonitoring = _monitoring.IsMonitoring;
+        if (wasMonitoring)
+            _monitoring.Stop();
+        try
+        {
+            await restore();
+        }
+        finally
+        {
+            if (wasMonitoring)
+                _monitoring.Start();
         }
     }
 
@@ -410,7 +454,6 @@ public sealed class MainViewModel : ObservableObject
 
     public async Task CheckCloudConfigAsync()
     {
-        var localNames = _config.Games.Select(g => g.Name).ToHashSet();
         var summaries = await _cloudConfigService.ListLatestSourcesAsync(_config, _webDavPassword);
         var cloudConfigs = summaries
             .Where(s => !string.IsNullOrEmpty(s.Filename) && s.Games.Count > 0)
@@ -431,18 +474,17 @@ public sealed class MainViewModel : ObservableObject
         }
 
         var (source, _, games) = selected.Value;
-        var cloudNames = games.Select(g => g.Name).ToHashSet();
-        var newNames = cloudNames.Except(localNames).ToList();
-        AppendLog(Localization.T("Log.CfgDetectSummary", source, games.Count, localNames.Count));
+        var newGames = NewCloudGames(games, logInvalid: false);
+        AppendLog(Localization.T("Log.CfgDetectSummary", source, games.Count, _config.Games.Count));
 
-        if (newNames.Count == 0)
+        if (newGames.Count == 0)
         {
             foreach (var alt in cloudConfigs.Where(c => c.Source != source))
             {
-                var altNew = alt.Games.Select(g => g.Name).Except(localNames).ToList();
+                var altNew = NewCloudGames(alt.Games, logInvalid: false);
                 if (altNew.Count > 0)
                 {
-                    _pendingCloudGames = alt.Games.Where(g => altNew.Contains(g.Name)).ToList();
+                    _pendingCloudGames = altNew;
                     _pendingCloudSource = alt.Source;
                     HasPendingCloudUpdate = true;
                     AppendLog(Localization.T("Log.CfgDetectAlt", source, alt.Source, altNew.Count));
@@ -455,27 +497,46 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        _pendingCloudGames = games.Where(g => newNames.Contains(g.Name)).ToList();
+        _pendingCloudGames = newGames;
         _pendingCloudSource = source;
         HasPendingCloudUpdate = true;
-        AppendLog(Localization.T("Log.CfgDetectNew", _pendingCloudGames.Count, string.Join(", ", newNames)));
+        AppendLog(Localization.T("Log.CfgDetectNew", newGames.Count, string.Join(", ", newGames.Select(g => g.Name))));
         AppendLog(Localization.T("Log.CfgDetectUpdateBtn"));
+    }
+
+    /// <summary>
+    /// Cloud games this device doesn't have yet. Names are compared like the folders they map to
+    /// (case-insensitively), and names that can't be a folder name are skipped.
+    /// </summary>
+    private List<GameConfig> NewCloudGames(IEnumerable<GameConfig> cloudGames, bool logInvalid)
+    {
+        var known = _config.Games.Select(g => g.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var result = new List<GameConfig>();
+        foreach (var game in cloudGames)
+        {
+            var nameError = GameNames.Validate(game.Name, Array.Empty<GameConfig>());
+            if (nameError != GameNameError.None)
+            {
+                if (logInvalid)
+                    AppendLog(Localization.T("Log.GameSkippedInvalid", game.Name, GameNames.Describe(nameError, game.Name)));
+                continue;
+            }
+            if (known.Add(game.Name))
+                result.Add(game);
+        }
+        return result;
     }
 
     public async Task<int> ApplyPendingCloudUpdateAsync()
     {
         if (_pendingCloudGames.Count == 0)
             return 0;
-        var localNames = _config.Games.Select(g => g.Name).ToHashSet();
         var imported = 0;
-        foreach (var ng in _pendingCloudGames)
+        foreach (var ng in NewCloudGames(_pendingCloudGames, logInvalid: true))
         {
-            if (localNames.Contains(ng.Name))
-                continue;
             ng.Save = FileUtil.FixSavePath(ng.Save);
             _config.Games.Add(ng);
             Games.Add(new GameItemViewModel(ng));
-            localNames.Add(ng.Name);
             imported++;
         }
         if (imported > 0)
@@ -493,16 +554,12 @@ public sealed class MainViewModel : ObservableObject
 
     public async Task<int> MergeCloudConfigAsync(string sourceLabel, string filename, IReadOnlyList<GameConfig> cloudGames)
     {
-        var localNames = _config.Games.Select(g => g.Name).ToHashSet();
         var imported = 0;
-        foreach (var ng in cloudGames)
+        foreach (var ng in NewCloudGames(cloudGames, logInvalid: true))
         {
-            if (string.IsNullOrEmpty(ng.Name) || localNames.Contains(ng.Name))
-                continue;
             ng.Save = FileUtil.FixSavePath(ng.Save);
             _config.Games.Add(ng);
             Games.Add(new GameItemViewModel(ng));
-            localNames.Add(ng.Name);
             imported++;
         }
         if (imported > 0)
@@ -542,43 +599,54 @@ public sealed class MainViewModel : ObservableObject
 
     private async Task AutoSyncAllGamesAsync()
     {
-        foreach (var game in _config.Games)
+        foreach (var game in _config.Games.ToList())
         {
             if (game.Paused || game.BackupMethods.Count == 0 || !Directory.Exists(game.Save))
                 continue;
-            var localTime = FileUtil.GetLatestMTime(game.Save);
-            if (localTime == 0)
-                continue;
-            var source = await _backupService.FindLatestSourceAsync(game, _config, _webDavPassword);
-            long cloudTime = 0;
-            if (source is not null)
+            try
             {
-                cloudTime = source.Method == Constants.MethodOneDrive
-                    ? FileUtil.GetLatestMTime(source.Path)
-                    : BackupName.Parse(source.Path).MTime;
+                await AutoSyncGameAsync(game);
             }
-            if (localTime - cloudTime > Constants.SyncThresholdSeconds)
+            catch (Exception ex)
             {
-                AppendLog(Localization.T("Log.AutoSyncUpload", game.Name));
-                await _backupService.PerformBackupAsync(game, _config, _webDavPassword, AppendLog);
-                await Task.Delay(1000);
-            }
-            else if (cloudTime - localTime > Constants.SyncThresholdSeconds && source is not null)
-            {
-                AppendLog(Localization.T("Log.AutoSyncDownload", game.Name));
-                if (source.Method == Constants.MethodOneDrive)
-                    await _backupService.RestoreFromOneDriveAsync(game, Path.GetFileName(source.Path), _config, AppendLog);
-                else
-                    await _backupService.RestoreFromWebDavAsync(game, source.Path, _config, _webDavPassword, AppendLog);
-                _monitoring.RestartIfActive();
-                await Task.Delay(1000);
-            }
-            else
-            {
-                AppendLog(Localization.T("Log.AutoSyncSynced", game.Name));
+                // One unreachable or broken game must not stop the others from syncing.
+                AppendLog(Localization.T("Log.AutoSyncGameFailed", game.Name, ex.Message));
             }
         }
         RunOnUi(() => _ = RefreshGamesAsync());
+    }
+
+    private async Task AutoSyncGameAsync(GameConfig game)
+    {
+        var localTime = FileUtil.GetLatestMTime(game.Save);
+        if (localTime == 0)
+            return;
+        var source = await _backupService.FindLatestSourceAsync(game, _config, _webDavPassword);
+        long cloudTime = 0;
+        if (source is not null)
+        {
+            cloudTime = source.Method == Constants.MethodOneDrive
+                ? FileUtil.GetLatestMTime(source.Path)
+                : BackupName.Parse(source.Path).MTime;
+        }
+        if (localTime - cloudTime > Constants.SyncThresholdSeconds)
+        {
+            AppendLog(Localization.T("Log.AutoSyncUpload", game.Name));
+            await _backupService.PerformBackupAsync(game, _config, _webDavPassword, AppendLog);
+            await Task.Delay(1000);
+        }
+        else if (cloudTime - localTime > Constants.SyncThresholdSeconds && source is not null)
+        {
+            AppendLog(Localization.T("Log.AutoSyncDownload", game.Name));
+            await WithMonitoringPausedAsync(() => source.Method == Constants.MethodOneDrive
+                ? _backupService.RestoreFromOneDriveAsync(game, Path.GetFileName(source.Path), _config, AppendLog)
+                : _backupService.RestoreFromWebDavAsync(game, source.Path, _config, _webDavPassword, AppendLog));
+            await Task.Delay(1000);
+        }
+        else
+        {
+            AppendLog(Localization.T("Log.AutoSyncSynced", game.Name));
+        }
     }
 
     // ---------------- Logging / UI marshalling ----------------

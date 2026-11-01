@@ -27,6 +27,7 @@
                       Click="OnToggleWebDavMethod" />
             <Separator />
             <MenuItem Header="{Binding [Menu.History], Source={x:Static loc:Localization.Instance}}" Click="OnShowHistory" />
+            <MenuItem Header="{Binding [Menu.RestoreSnapshot], Source={x:Static loc:Localization.Instance}}" Click="OnRestoreSnapshot" />
             <Separator />
             <MenuItem Header="{Binding [Menu.EditGame], Source={x:Static loc:Localization.Instance}}" Click="OnEditGame" />
             <MenuItem Header="{Binding [Menu.ExportSelected], Source={x:Static loc:Localization.Instance}}" Click="OnExportSelected" />

@@ -4,9 +4,10 @@ A Windows desktop app (C# / WPF, .NET 9) that monitors game save folders and bac
 
 ## Features
 
-- Auto monitoring: saves are backed up automatically when files change (10s cooldown + mtime dedupe)
+- Auto monitoring: saves are backed up 5 seconds after the folder stops changing; a save made during a running backup is queued, not lost; unchanged saves are skipped
 - Dual cloud targets: OneDrive and WebDAV, either or both
 - Backup history: browse, restore, delete, and batch-download cloud backups
+- Safe restores: the local save is snapshotted before it is overwritten (latest 5 kept) and can be restored at any time; a backup only appears once fully written, so a failed or interrupted backup is never taken for the newest one
 - Cloud config sync: config is backed up to the cloud, new games are detected on startup and merged with one click
 - Batch operations: upload, overwrite-download, delete, export/import configs
 - System integration: tray icon, auto-start with Windows, single-instance wake-up

@@ -6,15 +6,15 @@ namespace GameCloudSync.App.Views;
 
 public partial class SourcePickerDialog : Window
 {
-    public SourcePickerDialog(List<string>? options)
+    public SourcePickerDialog(List<string>? options, string? prompt = null)
     {
         InitializeComponent();
         DataContext = this;
         Options = options ??
                   new List<string> { Localization.T("Pick.OneDriveFirst"), Localization.T("Pick.WebDavFirst") };
-        PromptText = options is null
+        PromptText = prompt ?? (options is null
             ? Localization.T("Pick.BatchPrompt")
-            : Localization.T("Pick.SinglePrompt");
+            : Localization.T("Pick.SinglePrompt"));
         TitleText = Localization.T("Pick.Title");
         CancelText = Localization.T("Common.Cancel");
     }

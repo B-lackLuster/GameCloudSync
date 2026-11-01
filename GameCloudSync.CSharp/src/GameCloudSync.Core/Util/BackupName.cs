@@ -26,6 +26,9 @@ public static class BackupName
 
     public static DateTime? ToDateTime(string timestamp)
     {
+        // Two backups within the same second are told apart by a "_2"-style suffix.
+        if (timestamp.Length > 15 && timestamp[15] == '_')
+            timestamp = timestamp[..15];
         return DateTime.TryParseExact(
             timestamp,
             "yyyyMMdd_HHmmss",

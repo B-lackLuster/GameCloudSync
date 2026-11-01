@@ -11,6 +11,11 @@ public sealed record BackupEntry(
     string DateText,
     long SizeBytes);
 
+public sealed record RestoreSnapshot(
+    string Path,
+    DateTime Created,
+    long SizeBytes);
+
 public sealed record CloudConfigSummary(
     string Source,
     string Filename,

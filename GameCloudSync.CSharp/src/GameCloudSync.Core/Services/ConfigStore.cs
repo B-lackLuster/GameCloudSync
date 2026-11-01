@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -28,31 +29,38 @@ public sealed class ConfigStore
     public string AppDir { get; }
     public string ConfigPath => _configPath;
 
+    /// <summary>Copy of the last successfully saved config, used to recover from a corrupt config.json.</summary>
+    public string BackupPath => _configPath + ".bak";
+
+    /// <summary>Where a corrupt config.json was moved by <see cref="Load"/>, so the user can be told.</summary>
+    public string? CorruptConfigPath { get; private set; }
+
+    /// <summary>True when the corrupt config.json was replaced by <see cref="BackupPath"/>.</summary>
+    public bool RecoveredFromBackup { get; private set; }
+
+    /// <summary>
+    /// Loads config.json. A corrupt file is moved aside and replaced by the last good copy; a file
+    /// that cannot be read at all throws instead, because starting empty would overwrite it on the
+    /// next save.
+    /// </summary>
     public AppConfig Load()
     {
         lock (_lock)
         {
-            if (File.Exists(_configPath))
-            {
-                try
-                {
-                    var text = File.ReadAllText(_configPath);
-                    // Very old versions stored a plain game list at the root.
-                    if (IsPlainList(text))
-                    {
-                        var games = JsonSerializer.Deserialize<List<GameConfig>>(text, SerializerOptions) ?? new List<GameConfig>();
-                        return CreateDefault(games);
-                    }
+            var text = ReadIfExists(_configPath);
+            if (text is null)
+                return CreateDefault();
+            if (TryParse(text, out var config))
+                return config;
 
-                    var config = JsonSerializer.Deserialize<AppConfig>(text, SerializerOptions) ?? CreateDefault();
-                    EnsureDefaults(config);
-                    return config;
-                }
-                catch
-                {
-                    // Fall back to defaults rather than crashing on a corrupted file.
-                    return CreateDefault();
-                }
+            var corruptPath = $"{_configPath}.corrupt-{DateTime.Now:yyyyMMdd_HHmmss}";
+            File.Move(_configPath, corruptPath, overwrite: true);
+            CorruptConfigPath = corruptPath;
+            if (TryLoadBackup(out var recovered))
+            {
+                File.Copy(BackupPath, _configPath, overwrite: true);
+                RecoveredFromBackup = true;
+                return recovered;
             }
             return CreateDefault();
         }
@@ -67,6 +75,67 @@ public sealed class ConfigStore
             var json = JsonSerializer.Serialize(config, SerializerOptions);
             File.WriteAllText(tmp, json, new System.Text.UTF8Encoding(false));
             File.Move(tmp, _configPath, overwrite: true);
+            try
+            {
+                File.Copy(_configPath, BackupPath, overwrite: true);
+            }
+            catch
+            {
+                // The config itself was saved; the next save refreshes the backup.
+            }
+        }
+    }
+
+    private static string? ReadIfExists(string path)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return File.ReadAllText(path);
+            }
+            catch (FileNotFoundException)
+            {
+                return null;
+            }
+            catch (IOException) when (attempt < 3)
+            {
+                // Briefly locked by another process (antivirus, sync client); try again.
+                Thread.Sleep(100);
+            }
+        }
+    }
+
+    private bool TryLoadBackup([NotNullWhen(true)] out AppConfig? config)
+    {
+        config = null;
+        try
+        {
+            return File.Exists(BackupPath) && TryParse(File.ReadAllText(BackupPath), out config);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryParse(string text, [NotNullWhen(true)] out AppConfig? config)
+    {
+        try
+        {
+            // Very old versions stored a plain game list at the root.
+            config = IsPlainList(text)
+                ? CreateDefault(JsonSerializer.Deserialize<List<GameConfig>>(text, SerializerOptions) ?? new List<GameConfig>())
+                : JsonSerializer.Deserialize<AppConfig>(text, SerializerOptions);
+            if (config is null)
+                return false;
+            EnsureDefaults(config);
+            return true;
+        }
+        catch
+        {
+            config = null;
+            return false;
         }
     }
 
@@ -101,6 +170,7 @@ public sealed class ConfigStore
             ? Constants.SourceAsk
             : config.DefaultConfigSource;
         config.Games ??= new List<GameConfig>();
+        config.Games.RemoveAll(game => game is null);
         foreach (var game in config.Games)
         {
             game.Name ??= "";

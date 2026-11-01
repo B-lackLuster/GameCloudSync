@@ -5,9 +5,10 @@ using GameCloudSync.Core.Util;
 namespace GameCloudSync.Core.Services;
 
 /// <summary>
-/// Watches game save folders with FileSystemWatcher and runs backups on a
-/// single background worker with atomic try-submit semantics (no pile-up,
-/// no TOCTOU race), matching the Python original's BackgroundWorker design.
+/// Watches game save folders with FileSystemWatcher and backs a game up once its folder has
+/// been quiet for a moment (never later than a maximum delay). Backups run one at a time on a
+/// background worker; a change that arrives while another backup is running is queued and
+/// backed up afterwards, never dropped.
 /// </summary>
 public sealed class MonitoringService : IDisposable
 {
@@ -15,23 +16,33 @@ public sealed class MonitoringService : IDisposable
     private readonly Func<AppConfig> _getConfig;
     private readonly Func<string> _getPassword;
     private readonly Action<string> _log;
+    private readonly TimeSpan _quietPeriod;
+    private readonly TimeSpan _maxDelay;
     private readonly object _lock = new();
     private readonly List<GameWatcher> _watchers = new();
-    private readonly Channel<Func<Task>> _channel;
+    private readonly HashSet<GameWatcher> _queued = new();
+    // Kept across Stop/Start, keyed by save folder (which survives a rename), so a restart
+    // neither re-uploads unchanged saves nor forgets pending changes.
+    private readonly Dictionary<string, string> _backedUpFingerprints = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _pendingSaves = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Channel<GameWatcher> _channel;
     private readonly CancellationTokenSource _cts = new();
-    private int _busy;
 
     public MonitoringService(
         BackupService backupService,
         Func<AppConfig> getConfig,
         Func<string> getPassword,
-        Action<string> log)
+        Action<string> log,
+        TimeSpan? quietPeriod = null,
+        TimeSpan? maxDelay = null)
     {
         _backupService = backupService;
         _getConfig = getConfig;
         _getPassword = getPassword;
         _log = log;
-        _channel = Channel.CreateUnbounded<Func<Task>>(new UnboundedChannelOptions
+        _quietPeriod = quietPeriod ?? TimeSpan.FromSeconds(Constants.BackupQuietSeconds);
+        _maxDelay = maxDelay ?? TimeSpan.FromSeconds(Constants.BackupMaxDelaySeconds);
+        _channel = Channel.CreateUnbounded<GameWatcher>(new UnboundedChannelOptions
         {
             SingleReader = true,
             SingleWriter = false
@@ -62,6 +73,7 @@ public sealed class MonitoringService : IDisposable
 
     public bool Start()
     {
+        int count;
         lock (_lock)
         {
             if (_watchers.Count > 0)
@@ -86,14 +98,32 @@ public sealed class MonitoringService : IDisposable
                         continue;
                     }
                 }
-                var watcher = new GameWatcher(game, OnBackupTriggered, _log);
-                if (watcher.Start())
-                    _watchers.Add(watcher);
+                GameWatcher watcher;
+                try
+                {
+                    watcher = new GameWatcher(game, _quietPeriod, _maxDelay, Enqueue, _log);
+                }
+                catch (Exception ex)
+                {
+                    _log(Localization.T("Log.MonitorGameFail", game.Name, ex.Message));
+                    continue;
+                }
+                if (!watcher.Start())
+                {
+                    watcher.Dispose();
+                    continue;
+                }
+                _watchers.Add(watcher);
+                // A change seen before the restart still needs its backup.
+                if (_pendingSaves.Contains(SaveKey(game)))
+                    watcher.MarkChanged();
             }
+            _pendingSaves.RemoveWhere(key => _watchers.Any(w => SaveKey(w.Game) == key));
+            count = _watchers.Count;
         }
-        StateChanged?.Invoke();
-        _log(Localization.T("Log.MonitorStarted", _watchers.Count));
-        return _watchers.Count > 0;
+        RaiseStateChanged();
+        _log(Localization.T("Log.MonitorStarted", count));
+        return count > 0;
     }
 
     public void Stop()
@@ -106,7 +136,12 @@ public sealed class MonitoringService : IDisposable
         }
         foreach (var watcher in watchers)
             watcher.Dispose();
-        StateChanged?.Invoke();
+        lock (_lock)
+        {
+            foreach (var watcher in watchers.Where(w => w.PendingAtDispose))
+                _pendingSaves.Add(SaveKey(watcher.Game));
+        }
+        RaiseStateChanged();
         _log(Localization.T("Log.MonitorStopped"));
     }
 
@@ -118,58 +153,105 @@ public sealed class MonitoringService : IDisposable
         Start();
     }
 
-    private void OnBackupTriggered(GameConfig game)
+    private void Enqueue(GameWatcher watcher)
     {
-        TrySubmit(() => _backupService.PerformBackupAsync(game, _getConfig(), _getPassword(), _log));
-    }
-
-    /// <summary>Atomically enqueues a task only when the worker is idle.</summary>
-    public bool TrySubmit(Func<Task> task)
-    {
-        if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0)
-            return false;
-        if (!_channel.Writer.TryWrite(async () =>
+        lock (_lock)
         {
-            try
-            {
-                await task();
-            }
-            catch (Exception ex)
-            {
-                _log(Localization.T("Log.TaskError", ex.Message));
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _busy, 0);
-                BackupFinished?.Invoke();
-            }
-        }))
-        {
-            Interlocked.Exchange(ref _busy, 0);
-            return false;
+            // One waiting run per game is enough: it backs up whatever the folder holds when it starts.
+            if (!_queued.Add(watcher))
+                return;
         }
-        return true;
+        if (!_channel.Writer.TryWrite(watcher))
+        {
+            lock (_lock)
+                _queued.Remove(watcher);
+        }
     }
 
     private async Task RunWorkerAsync()
     {
         try
         {
-            await foreach (var task in _channel.Reader.ReadAllAsync(_cts.Token))
+            await foreach (var watcher in _channel.Reader.ReadAllAsync(_cts.Token))
             {
+                lock (_lock)
+                {
+                    _queued.Remove(watcher);
+                    if (watcher.IsDisposed)
+                    {
+                        // Monitoring restarted while this run waited: hand it to the new watcher.
+                        var live = _watchers.FirstOrDefault(w => SaveKey(w.Game) == SaveKey(watcher.Game));
+                        if (live is not null)
+                            live.MarkChanged();
+                        else
+                            _pendingSaves.Add(SaveKey(watcher.Game));
+                        continue;
+                    }
+                }
                 try
                 {
-                    await task();
+                    if (await BackupIfChangedAsync(watcher.Game))
+                        RaiseBackupFinished();
                 }
-                catch
+                catch (OperationCanceledException) when (_cts.IsCancellationRequested)
                 {
-                    // handled inside the wrapper
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _log(Localization.T("Log.TaskError", ex.Message));
                 }
             }
         }
         catch (OperationCanceledException)
         {
             // shutdown
+        }
+    }
+
+    private async Task<bool> BackupIfChangedAsync(GameConfig game)
+    {
+        if (!FileUtil.HasAnyFile(game.Save))
+            return false;
+        var fingerprint = FileUtil.Fingerprint(game.Save);
+        lock (_lock)
+        {
+            // Nothing new since the last backup (e.g. a save rewritten with identical files).
+            if (_backedUpFingerprints.TryGetValue(SaveKey(game), out var last) && last == fingerprint)
+                return false;
+        }
+        var result = await _backupService.PerformBackupAsync(game, _getConfig(), _getPassword(), _log, _cts.Token);
+        if (result.Count > 0)
+        {
+            lock (_lock)
+                _backedUpFingerprints[SaveKey(game)] = fingerprint;
+        }
+        return true;
+    }
+
+    private static string SaveKey(GameConfig game) =>
+        Path.TrimEndingDirectorySeparator(game.Save).ToUpperInvariant();
+
+    private void RaiseStateChanged() => RaiseSafely(StateChanged);
+
+    private void RaiseBackupFinished() => RaiseSafely(BackupFinished);
+
+    private void RaiseSafely(Action? handlers)
+    {
+        if (handlers is null)
+            return;
+        // A failing subscriber (e.g. UI code called from the wrong thread) must not leave
+        // monitoring half stopped or kill the backup worker.
+        foreach (var handler in handlers.GetInvocationList().Cast<Action>())
+        {
+            try
+            {
+                handler();
+            }
+            catch (Exception ex)
+            {
+                _log(Localization.T("Log.TaskError", ex.Message));
+            }
         }
     }
 
@@ -182,28 +264,50 @@ public sealed class MonitoringService : IDisposable
 
     private sealed class GameWatcher : IDisposable
     {
-        private readonly GameConfig _game;
-        private readonly Action<GameConfig> _onTrigger;
+        private readonly TimeSpan _quietPeriod;
+        private readonly TimeSpan _maxDelay;
+        private readonly Action<GameWatcher> _onDue;
         private readonly Action<string> _log;
         private readonly FileSystemWatcher _watcher;
+        private readonly Timer _timer;
         private readonly object _lock = new();
-        private long _lastBackupTime;
-        private long _lastBackupMTime;
+        private DateTime? _firstChangeUtc;
+        private bool _disposed;
 
-        public GameWatcher(GameConfig game, Action<GameConfig> onTrigger, Action<string> log)
+        public GameWatcher(GameConfig game, TimeSpan quietPeriod, TimeSpan maxDelay, Action<GameWatcher> onDue,
+            Action<string> log)
         {
-            _game = game;
-            _onTrigger = onTrigger;
+            Game = game;
+            _quietPeriod = quietPeriod;
+            _maxDelay = maxDelay;
+            _onDue = onDue;
             _log = log;
             _watcher = new FileSystemWatcher(game.Save)
             {
                 IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.CreationTime,
+                InternalBufferSize = 64 * 1024,
                 EnableRaisingEvents = false
             };
-            _watcher.Changed += OnChanged;
-            _watcher.Created += OnCreated;
-            _watcher.Renamed += OnRenamed;
+            _timer = new Timer(_ => OnDue(), null, Timeout.Infinite, Timeout.Infinite);
+            _watcher.Changed += OnFileEvent;
+            _watcher.Created += OnFileEvent;
+            _watcher.Renamed += OnFileEvent;
+            _watcher.Error += OnWatcherError;
+        }
+
+        public GameConfig Game { get; }
+
+        /// <summary>True when a change was still waiting for its quiet period at disposal.</summary>
+        public bool PendingAtDispose { get; private set; }
+
+        public bool IsDisposed
+        {
+            get
+            {
+                lock (_lock)
+                    return _disposed;
+            }
         }
 
         public bool Start()
@@ -215,53 +319,69 @@ public sealed class MonitoringService : IDisposable
             }
             catch (Exception ex)
             {
-                _log(Localization.T("Log.MonitorGameFail", _game.Name, ex.Message));
+                _log(Localization.T("Log.MonitorGameFail", Game.Name, ex.Message));
                 return false;
             }
         }
 
-        private void OnChanged(object sender, FileSystemEventArgs e)
+        public void MarkChanged()
         {
-            if (!e.ChangeType.HasFlag(WatcherChangeTypes.Changed) || Directory.Exists(e.FullPath))
-                return;
-            Backup();
-        }
-
-        private void OnCreated(object sender, FileSystemEventArgs e)
-        {
-            if (Directory.Exists(e.FullPath))
-                return;
-            Backup();
-        }
-
-        private void OnRenamed(object sender, RenamedEventArgs e)
-        {
-            if (!Directory.Exists(e.FullPath))
-                Backup();
-        }
-
-        private void Backup()
-        {
-            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             lock (_lock)
             {
-                if (now - _lastBackupTime < Constants.CooldownSeconds)
+                if (_disposed)
                     return;
-                var currentMTime = FileUtil.GetLatestMTime(_game.Save);
-                if (currentMTime <= _lastBackupMTime)
-                    return;
-                _lastBackupTime = now;
-                _lastBackupMTime = currentMTime;
+                var now = DateTime.UtcNow;
+                _firstChangeUtc ??= now;
+                // Wait until the game has finished writing, but never postpone past the max delay.
+                var untilDeadline = _firstChangeUtc.Value + _maxDelay - now;
+                var due = untilDeadline < _quietPeriod ? untilDeadline : _quietPeriod;
+                _timer.Change(due > TimeSpan.Zero ? due : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
             }
-            _onTrigger(_game);
+        }
+
+        private void OnFileEvent(object sender, FileSystemEventArgs e)
+        {
+            // Folder entries change whenever files inside them do; only file events matter.
+            if (Directory.Exists(e.FullPath))
+                return;
+            MarkChanged();
+        }
+
+        private void OnWatcherError(object sender, ErrorEventArgs e)
+        {
+            // Events were lost, so assume the folder changed.
+            if (e.GetException() is InternalBufferOverflowException)
+                MarkChanged();
+            else
+                _log(Localization.T("Log.MonitorWatchError", Game.Name, e.GetException().Message));
+        }
+
+        private void OnDue()
+        {
+            lock (_lock)
+            {
+                if (_disposed || _firstChangeUtc is null)
+                    return;
+                _firstChangeUtc = null;
+            }
+            _onDue(this);
         }
 
         public void Dispose()
         {
+            lock (_lock)
+            {
+                if (_disposed)
+                    return;
+                _disposed = true;
+                PendingAtDispose = _firstChangeUtc is not null;
+                _timer.Dispose();
+            }
             _watcher.EnableRaisingEvents = false;
-            _watcher.Changed -= OnChanged;
-            _watcher.Created -= OnCreated;
-            _watcher.Renamed -= OnRenamed;
+            _watcher.Changed -= OnFileEvent;
+            _watcher.Created -= OnFileEvent;
+            _watcher.Renamed -= OnFileEvent;
+            _watcher.Error -= OnWatcherError;
             _watcher.Dispose();
         }
     }

@@ -282,31 +282,7 @@ public partial class MainWindow : Window
                         ? Constants.MethodOneDrive
                         : Constants.MethodWebDav;
                 }
-                if (MessageBox.Show(this, Localization.T("Msg.BatchDownloadConfirm", selected.Count),
-                        Localization.T("Msg.BatchDownloadTitle"), MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-                {
-                    return;
-                }
-                var oldPref = _vm.Config.DefaultDownloadSource;
-                _vm.Config.DefaultDownloadSource = pref;
-                try
-                {
-                    foreach (var item in selected)
-                    {
-                        var source = await _vm.BackupService.FindLatestSourceAsync(
-                            item.Game, _vm.Config, _vm.WebDavPassword);
-                        if (source is null)
-                        {
-                            _vm.AppendLog(Localization.T("Msg.SkipNoBackupLog", item.Name));
-                            continue;
-                        }
-                        await _vm.RestoreFromSourceAsync(item, source);
-                    }
-                }
-                finally
-                {
-                    _vm.Config.DefaultDownloadSource = oldPref;
-                }
+                await RestoreBatchAsync(selected, pref);
             }
             else
             {
@@ -355,22 +331,119 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Restores several games at once. Games whose local save is newer than their latest backup are
+    /// left alone (restore those one by one to override), and one failure doesn't stop the rest.
+    /// </summary>
+    private async Task RestoreBatchAsync(List<GameItemViewModel> selected, string preference)
+    {
+        var plan = new List<(GameItemViewModel Item, BackupSource Source)>();
+        var localNewer = new List<string>();
+        var noBackup = new List<string>();
+        await _vm.RunBusyAsync(async () =>
+        {
+            foreach (var item in selected)
+            {
+                var source = await _vm.BackupService.FindLatestSourceAsync(
+                    item.Game, _vm.Config, _vm.WebDavPassword, preference);
+                if (source is null)
+                {
+                    noBackup.Add(item.Name);
+                    _vm.AppendLog(Localization.T("Msg.SkipNoBackupLog", item.Name));
+                }
+                else if (FileUtil.GetLatestMTime(item.Game.Save) - BackupService.GetBackupMTime(source)
+                         > Constants.SyncThresholdSeconds)
+                {
+                    localNewer.Add(item.Name);
+                }
+                else
+                {
+                    plan.Add((item, source));
+                }
+            }
+        });
+
+        var skipped = (localNewer.Count > 0 ? Localization.T("Msg.BatchSkipLocalNewer", JoinNames(localNewer)) : "")
+                      + (noBackup.Count > 0 ? Localization.T("Msg.BatchSkipNoBackup", JoinNames(noBackup)) : "");
+        if (plan.Count == 0)
+        {
+            MessageBox.Show(this, Localization.T("Msg.BatchNothing") + skipped, Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var confirm = Localization.T("Msg.BatchDownloadConfirm", plan.Count, JoinNames(plan.Select(p => p.Item.Name)))
+                      + skipped + Localization.T("Msg.BatchContinue");
+        if (MessageBox.Show(this, confirm, Localization.T("Msg.BatchDownloadTitle"),
+                MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+
+        var failed = new List<string>();
+        foreach (var (item, source) in plan)
+        {
+            try
+            {
+                await _vm.RestoreFromSourceAsync(item, source);
+            }
+            catch (Exception ex)
+            {
+                failed.Add($"{item.Name}: {ex.Message}");
+                _vm.AppendLog(Localization.T("Msg.RestoreFailed", $"{item.Name}: {ex.Message}"));
+            }
+        }
+        var summary = Localization.T("Msg.BatchDownloadDone", plan.Count - failed.Count)
+                      + (failed.Count > 0 ? Localization.T("Msg.BatchDownloadFailed", failed.Count, string.Join("\n", failed)) : "");
+        MessageBox.Show(this, summary, Localization.T("Common.Done"), MessageBoxButton.OK,
+            failed.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+    }
+
+    private static string JoinNames(IEnumerable<string> names) =>
+        string.Join(Localization.Instance.IsEnglish ? ", " : "、", names);
+
+    private async void OnRestoreSnapshot(object sender, RoutedEventArgs e)
+    {
+        var item = _vm.SelectedGames.FirstOrDefault();
+        if (item is null)
+        {
+            MessageBox.Show(this, Localization.T("Msg.SelectGameFirst"), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var snapshots = _vm.BackupService.ListRestoreSnapshots(item.Game);
+        if (snapshots.Count == 0)
+        {
+            MessageBox.Show(this, Localization.T("Snap.None", item.Name), Localization.T("Common.Info"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var picker = new SourcePickerDialog(
+            snapshots.Select(s => $"{s.Created:yyyy-MM-dd HH:mm:ss}  ·  {FileUtil.FormatSize(s.SizeBytes)}").ToList(),
+            Localization.T("Snap.Prompt", item.Name, Constants.MaxRestoreSnapshots))
+        {
+            Owner = this
+        };
+        if (picker.ShowDialog() != true || picker.SelectedIndex < 0)
+            return;
+        var snapshot = snapshots[picker.SelectedIndex];
+        if (MessageBox.Show(this, Localization.T("Snap.Confirm", item.Name, $"{snapshot.Created:yyyy-MM-dd HH:mm:ss}"),
+                Localization.T("Msg.RestoreConfirmTitle"), MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+        try
+        {
+            await _vm.RestoreFromSnapshotAsync(item, snapshot.Path);
+            MessageBox.Show(this, Localization.T("Snap.Done", item.Name), Localization.T("Common.Done"),
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, Localization.T("Msg.RestoreFailed", ex.Message), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private static string BuildRestoreConfirmMessage(GameItemViewModel item, BackupSource source)
     {
         var localTs = FileUtil.GetLatestMTime(item.Game.Save);
-        long cloudTs;
-        if (source.Method == Constants.MethodOneDrive)
-        {
-            cloudTs = FileUtil.GetLatestMTime(source.Path);
-        }
-        else
-        {
-            var (ts, mtime) = BackupName.Parse(source.Path);
-            cloudTs = mtime > 0 ? mtime :
-                BackupName.ToDateTime(ts) is { } dt
-                    ? new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Local)).ToUnixTimeSeconds()
-                    : 0;
-        }
+        var cloudTs = BackupService.GetBackupMTime(source);
         var localStr = localTs > 0
             ? DateTimeOffset.FromUnixTimeSeconds(localTs).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
             : Localization.T("Msg.RestoreNoLocal");
@@ -510,7 +583,7 @@ public partial class MainWindow : Window
         window.Show();
     }
 
-    private void OnEditGame(object sender, RoutedEventArgs e)
+    private async void OnEditGame(object sender, RoutedEventArgs e)
     {
         var item = _vm.SelectedGames.FirstOrDefault();
         if (item is null)
@@ -519,19 +592,59 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+        var oldName = item.Game.Name;
         var dialog = new EditGameDialog(_vm, item.Game)
         {
             Owner = this
         };
-        if (dialog.ShowDialog() == true)
+        if (dialog.ShowDialog() != true)
+            return;
+
+        var renamed = oldName != item.Game.Name;
+        // No backup may land in either cloud folder while it is being renamed.
+        var pauseMonitoring = renamed && _vm.Monitoring.IsMonitoring;
+        if (pauseMonitoring)
+            _vm.Monitoring.Stop();
+        try
+        {
+            if (renamed)
+                await RenameCloudBackupsAsync(oldName, item.Game.Name);
+        }
+        finally
         {
             item.Refresh();
             _vm.ConfigStore.Save(_vm.Config);
             if (_vm.Config.AutoBackupConfigToCloud)
                 _ = _vm.BackupConfigToCloudAsync();
-            _vm.RestartMonitoringIfActive();
+            if (pauseMonitoring)
+                _vm.Monitoring.Start();
+            else
+                _vm.RestartMonitoringIfActive();
             _ = _vm.RefreshGamesAsync();
         }
+    }
+
+    /// <summary>Backups are stored in folders named after the game, so a rename has to move them too.</summary>
+    private async Task RenameCloudBackupsAsync(string oldName, string newName)
+    {
+        if (string.IsNullOrEmpty(_vm.Config.CloudRoot) && string.IsNullOrEmpty(_vm.Config.WebDavUrl))
+            return;
+        if (MessageBox.Show(this, Localization.T("Rename.Ask", oldName, newName), Localization.T("Rename.Title"),
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+        {
+            _vm.AppendLog(Localization.T("Log.RenameSkipped", oldName, newName));
+            return;
+        }
+        var failures = await _vm.BackupService.RenameGameStorageAsync(oldName, newName, _vm.Config, _vm.WebDavPassword);
+        if (failures.Count == 0)
+        {
+            _vm.AppendLog(Localization.T("Log.RenameDone", oldName, newName));
+            return;
+        }
+        foreach (var failure in failures)
+            _vm.AppendLog(failure);
+        MessageBox.Show(this, Localization.T("Rename.SomeFailed", string.Join("\n", failures), oldName),
+            Localization.T("Common.Warning"), MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
     private void OnDeleteGame(object sender, RoutedEventArgs e)
@@ -692,20 +805,27 @@ public partial class MainWindow : Window
             {
                 if (string.IsNullOrEmpty(ig.Name) || string.IsNullOrEmpty(ig.Save))
                     continue;
+                var nameError = GameNames.Validate(ig.Name, Array.Empty<GameConfig>());
+                if (nameError != GameNameError.None)
+                {
+                    _vm.AppendLog(Localization.T("Log.GameSkippedInvalid", ig.Name, GameNames.Describe(nameError, ig.Name)));
+                    continue;
+                }
                 var fixedSave = FileUtil.FixSavePath(ig.Save);
                 if (fixedSave != ig.Save)
                     fixedPaths++;
                 ig.Save = fixedSave;
-                if (_vm.Config.Games.Any(g => g.Name == ig.Name))
+                // Names are compared like folder names: case-insensitively.
+                bool SameName(GameConfig g) => string.Equals(g.Name, ig.Name, StringComparison.OrdinalIgnoreCase);
+                if (_vm.Config.Games.Any(SameName))
                 {
                     if (MessageBox.Show(this, Localization.T("Msg.ImportDuplicateAsk", ig.Name), Localization.T("Msg.ImportDuplicateTitle"),
                             MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
                     {
                         continue;
                     }
-                    _vm.Config.Games.RemoveAll(g => g.Name == ig.Name);
-                    var existing = _vm.Games.FirstOrDefault(g => g.Name == ig.Name);
-                    if (existing is not null)
+                    _vm.Config.Games.RemoveAll(SameName);
+                    foreach (var existing in _vm.Games.Where(g => SameName(g.Game)).ToList())
                         _vm.Games.Remove(existing);
                 }
                 _vm.Config.Games.Add(ig);
@@ -761,8 +881,9 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        var localNames = _vm.Config.Games.Select(g => g.Name).ToHashSet();
-        var newGames = games.Where(g => !localNames.Contains(g.Name)).ToList();
+        var localNames = _vm.Config.Games.Select(g => g.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var newGames = games.Where(g => !localNames.Contains(g.Name)
+            && GameNames.Validate(g.Name, Array.Empty<GameConfig>()) == GameNameError.None).ToList();
         if (newGames.Count == 0)
         {
             MessageBox.Show(this, Localization.T("CfgRestore.NoNew", source, games.Count), Localization.T("Common.Info"),

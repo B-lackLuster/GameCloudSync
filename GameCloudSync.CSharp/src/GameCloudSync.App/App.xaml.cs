@@ -55,7 +55,18 @@ public partial class App : Application
 
         // Services
         var configStore = new ConfigStore(appDir);
-        Localization.Instance.Language = configStore.Load().Language;
+        try
+        {
+            Localization.Instance.Language = configStore.Load().Language;
+        }
+        catch (Exception ex)
+        {
+            // Carrying on with an empty config would overwrite the real one on the next save.
+            MessageBox.Show(Localization.T("Cfg.ReadFailed", configStore.ConfigPath, ex.Message), "GameCloudSync",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown();
+            return;
+        }
         var secretStore = new SecretStore(appDir);
         MigrateLegacyPassword(appDir, configStore, secretStore);
 
@@ -67,7 +78,7 @@ public partial class App : Application
             return new WebDavClient(url, cfg.WebDavUsername, password,
                 log: vm is null ? null : m => vm.AppendLog(m),
                 debug: cfg.DebugWebDavLog && vm is not null ? m => vm.AppendLog(m) : null);
-        });
+        }, snapshotRoot: Path.Combine(appDir, Constants.RestoreSnapshotDir));
         var cloudConfigService = new CloudConfigService((url, password) =>
         {
             var cfg = configStore.Load();
@@ -101,7 +112,8 @@ public partial class App : Application
         _tray.QuitRequested += () => ShutdownApp();
 
         viewModel.ShowWindowRequested += () => ShowMainWindow();
-        _monitoring.StateChanged += UpdateTray;
+        // Monitoring can be restarted from background threads (startup auto sync); the tray icon is UI.
+        _monitoring.StateChanged += () => Dispatcher.InvokeAsync(UpdateTray);
 
         _mainWindow = new MainWindow(viewModel, _tray);
         MainWindow = _mainWindow;
@@ -109,6 +121,14 @@ public partial class App : Application
         _mainWindow.Show();
 
         viewModel.Load();
+        if (configStore.CorruptConfigPath is { } corruptPath)
+        {
+            var notice = Localization.T(configStore.RecoveredFromBackup ? "Cfg.RecoveredFromBak" : "Cfg.CorruptReset",
+                corruptPath);
+            viewModel.AppendLog(notice);
+            MessageBox.Show(_mainWindow, notice, Localization.T("Common.Warning"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
         viewModel.AutoStart();
         viewModel.CheckWakeupFile();
         UpdateTray();

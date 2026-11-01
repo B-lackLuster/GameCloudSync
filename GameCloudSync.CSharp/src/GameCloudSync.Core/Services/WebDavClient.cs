@@ -130,7 +130,8 @@ public sealed class WebDavClient : IDisposable
 
     public async Task<bool> PutFileAsync(string localPath, string remotePath, CancellationToken ct = default)
     {
-        await using var stream = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+        await using var stream = new FileStream(localPath, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete, 64 * 1024, useAsync: true);
         using var content = new StreamContent(stream, 64 * 1024);
         var (status, _) = await RequestAsync("PUT", remotePath, content: content, ct: ct);
         return status is 200 or 201 or 204;
@@ -152,6 +153,25 @@ public sealed class WebDavClient : IDisposable
     {
         var (status, _) = await RequestAsync("DELETE", path, ct: ct);
         return status is 200 or 204;
+    }
+
+    public async Task<bool> DeleteCollectionAsync(string path, CancellationToken ct = default)
+    {
+        var (status, _) = await RequestAsync("DELETE", path, ct: ct, collection: true);
+        return status is 200 or 204 or 404;
+    }
+
+    /// <summary>Renames a remote file or folder; returns the HTTP status (201/204 on success).</summary>
+    public async Task<int> MoveAsync(string fromPath, string toPath, bool collection, bool overwrite,
+        CancellationToken ct = default)
+    {
+        var slash = collection ? "/" : "";
+        var (status, _) = await RequestAsync("MOVE", fromPath, extraHeaders: new Dictionary<string, string>
+        {
+            ["Destination"] = $"{_baseUrl}/{EncodePath(toPath)}{slash}",
+            ["Overwrite"] = overwrite ? "T" : "F"
+        }, ct: ct, collection: collection);
+        return status;
     }
 
     /// <summary>Uploads a local directory to the server with parallel file PUTs.</summary>
@@ -261,9 +281,11 @@ public sealed class WebDavClient : IDisposable
         string path,
         HttpContent? content = null,
         Dictionary<string, string>? extraHeaders = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool collection = false)
     {
-        var encoded = EncodePath(path);
+        // Collections get a trailing slash so servers don't answer with a redirect (which drops credentials).
+        var encoded = EncodePath(path) + (collection ? "/" : "");
         using var request = new HttpRequestMessage(new HttpMethod(method), $"{_baseUrl}/{encoded}")
         {
             Content = content

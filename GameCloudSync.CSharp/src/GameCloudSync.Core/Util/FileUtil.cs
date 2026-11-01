@@ -127,9 +127,63 @@ public static partial class FileUtil
             });
     }
 
+    /// <summary>
+    /// Copies a save folder the game may still be writing. Files are opened with full sharing so the
+    /// game is never blocked, and the copy is retaken when the folder changed while it was read.
+    /// Returns false when the folder never held still; the last copy is kept.
+    /// </summary>
+    public static async Task<bool> CopyDirectoryConsistentAsync(string sourceDir, string destDir,
+        CancellationToken ct = default, int attempts = 3, TimeSpan? retryDelay = null)
+    {
+        var delay = retryDelay ?? TimeSpan.FromSeconds(1);
+        for (var attempt = 1; ; attempt++)
+        {
+            var before = Fingerprint(sourceDir);
+            try
+            {
+                DeleteDirectorySafe(destDir);
+                await CopyDirectoryAsync(sourceDir, destDir, ct);
+            }
+            catch (IOException) when (attempt < attempts)
+            {
+                // A file vanished or was exclusively locked mid-save; try again once it settles.
+                await Task.Delay(delay, ct);
+                continue;
+            }
+            if (Fingerprint(sourceDir) == before)
+                return true;
+            if (attempt >= attempts)
+                return false;
+            await Task.Delay(delay, ct);
+        }
+    }
+
+    /// <summary>Describes every file's relative path, size and write time; equal fingerprints mean nothing changed.</summary>
+    public static string Fingerprint(string folder)
+    {
+        var entries = new DirectoryInfo(folder).EnumerateFiles("*", SearchOption.AllDirectories)
+            .Select(f => $"{Path.GetRelativePath(folder, f.FullName)}|{f.Length}|{f.LastWriteTimeUtc.Ticks}")
+            .Order(StringComparer.OrdinalIgnoreCase);
+        return string.Join('\n', entries);
+    }
+
+    public static bool HasAnyFile(string folder)
+    {
+        try
+        {
+            return Directory.Exists(folder) && Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).Any();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public static async Task CopyFileAsync(string source, string dest, CancellationToken ct = default)
     {
-        await using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true))
+        // Share write/delete access so a game saving at this moment is not refused by our read.
+        await using (var input = new FileStream(source, FileMode.Open, FileAccess.Read,
+                         FileShare.ReadWrite | FileShare.Delete, 64 * 1024, useAsync: true))
         await using (var output = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
         {
             await input.CopyToAsync(output, ct);

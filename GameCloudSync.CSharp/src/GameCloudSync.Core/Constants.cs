@@ -8,14 +8,20 @@ public static class Constants
     public const string SaltFileName = ".gcs_salt";
     public const string MutexName = "Global\\GameCloudSync_Unique_Mutex";
 
-    public const int CooldownSeconds = 10;
+    // Back up once a save folder has been quiet this long, but never wait longer than the max delay.
+    public const int BackupQuietSeconds = 5;
+    public const int BackupMaxDelaySeconds = 120;
     public const int DefaultMaxBackups = 10;
+    public const int MaxRestoreSnapshots = 5;
     public const int WebDavWorkers = 4;
     public const int MaxConfigBackups = 10;
     public const int WebDavConfigListLimit = 10;
     public const int SyncThresholdSeconds = 3;
 
     public const string CloudConfigBackupDir = "云存档配置备份";
+    // Backups are written under this prefix and renamed to save_* only once complete.
+    public const string IncompleteBackupPrefix = "incomplete_";
+    public const string RestoreSnapshotDir = "restore-snapshots";
 
     public const string MethodOneDrive = "onedrive";
     public const string MethodWebDav = "webdav";

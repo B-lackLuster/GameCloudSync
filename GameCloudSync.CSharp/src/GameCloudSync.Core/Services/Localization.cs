@@ -206,7 +206,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Hist.Title"] = "历史备份 - {0}",
         ["Hist.EmptyOd"] = "该游戏未启用 OneDrive 备份，或云端还没有备份",
         ["Hist.EmptyWd"] = "该游戏未启用 WebDAV 备份，或云端还没有备份",
-        ["Hist.RestoreConfirm"] = "确定要用备份「{0}」覆盖本地存档吗？\n当前本地存档将被删除！",
+        ["Hist.RestoreConfirm"] = "确定要用备份「{0}」覆盖本地存档吗？\n当前本地存档会先保存为快照，可通过游戏右键菜单“从恢复前快照还原”找回。",
         ["Hist.RestoreSuccess"] = "游戏「{0}」已恢复到备份版本 {1}",
         ["Hist.DeleteConfirm"] = "确定要删除选中的 {0} 个备份吗？",
         ["Hist.DeleteConfirmOd"] = "确定要删除选中的 {0} 个 OneDrive 备份吗？",
@@ -243,7 +243,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Msg.BatchUploadTitle"] = "批量上传",
         ["Msg.UploadFailed"] = "上传失败: {0}",
         ["Msg.SelectDownloadGames"] = "请先选中需要下载覆盖的游戏。",
-        ["Msg.BatchDownloadConfirm"] = "确定要用云端最新备份覆盖选中的 {0} 个游戏的本地存档吗？",
+        ["Msg.BatchDownloadConfirm"] = "将用云端最新备份覆盖以下 {0} 个游戏的本地存档：\n{1}\n\n覆盖前会自动保存本地快照，可通过游戏右键菜单“从恢复前快照还原”找回。",
         ["Msg.BatchDownloadTitle"] = "批量覆盖下载",
         ["Msg.NoCloudBackup"] = "未找到任何云端备份！",
         ["Msg.RestoreConfirmTitle"] = "覆盖确认",
@@ -256,7 +256,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Msg.RestoreLocalTime"] = "[本地]: {0}",
         ["Msg.RestoreNoLocal"] = "无本地",
         ["Msg.RestoreUnknown"] = "未知",
-        ["Msg.RestoreAsk"] = "确定覆盖？",
+        ["Msg.RestoreAsk"] = "覆盖前会自动把当前本地存档保存为快照。\n确定覆盖？",
         ["Msg.PathMissingTitle"] = "路径不存在",
         ["Msg.PathMissing"] = "本地存档路径不存在：\n{0}\n\n可能尚未创建或已被删除。",
         ["Msg.NoCloudTarget"] = "该游戏未配置可用的云端目录目标。",
@@ -341,6 +341,54 @@ public sealed class Localization : INotifyPropertyChanged
         ["Log.WebDavMkcolFail"] = "⚠ WebDAV MKCOL {0}: 创建目录失败",
         ["Log.WebDavNoFiles"] = "⚠ WebDAV download_dir '{0}': 未找到任何文件",
         ["Log.WebDavUploadItemFail"] = "⚠ WebDAV 上传失败: {0}",
+
+        // Backup safety
+        ["Log.BackupUnstable"] = "⚠ {0}: 复制期间存档一直在变化，本次备份可能不是同一时刻的完整快照",
+        ["Log.CleanupFailed"] = "⚠ {0}: 清理 {1} 旧备份失败 ({2})",
+        ["Log.WebDavMoveFallback"] = "⚠ WebDAV 服务器不支持重命名目录（MOVE 返回 HTTP {0}），改为直接上传到最终目录",
+        ["Log.MonitorWatchError"] = "⚠ {0}: 文件监控中断 ({1})",
+        ["Log.AutoSyncGameFailed"] = "✗ 启动同步: {0} 失败 ({1})",
+        ["Log.GameSkippedInvalid"] = "⚠ 已跳过游戏「{0}」：{1}",
+        ["Log.SnapshotSaved"] = "📸 {0}: 覆盖前已把本地存档保存为快照 {1}",
+        ["Log.SnapshotRestored"] = "⇩ ✓ {0}: 已从恢复前快照 [{1}] 还原",
+        ["Log.RenameDone"] = "✓ 云端备份文件夹已从「{0}」改名为「{1}」",
+        ["Log.RenameSkipped"] = "⚠ 游戏已改名为「{1}」，旧名称「{0}」下的云端备份没有改名，新名称的历史版本中看不到它们",
+        ["Err.WebDavUploadIncomplete"] = "部分文件上传失败",
+        ["Err.SnapshotFailed"] = "无法保存恢复前快照，已取消恢复：{0}",
+
+        // Game names
+        ["Name.Empty"] = "游戏名称不能为空。",
+        ["Name.TooLong"] = "游戏名称不能超过 {0} 个字符。",
+        ["Name.InvalidChars"] = "游戏名称会用作云端文件夹名，不能包含 \\ / : * ? \" < > | 等字符，也不能以点或空格结尾。",
+        ["Name.Reserved"] = "「{0}」是系统保留名称，请换一个名称。",
+        ["Name.Duplicate"] = "已经有名为「{0}」的游戏（不区分大小写）。重名的游戏会共用同一个云端文件夹，互相覆盖备份。",
+
+        // Rename
+        ["Rename.Title"] = "同步重命名云端备份",
+        ["Rename.Ask"] = "游戏已从「{0}」改名为「{1}」。\n云端备份按游戏名存放，是否把已有的备份文件夹一起改名？\n\n选择“否”：旧备份留在「{0}」文件夹中，新名称的历史版本里看不到它们。",
+        ["Rename.TargetExists"] = "{0}：目标文件夹「{1}」已存在，未改名",
+        ["Rename.Failed"] = "{0}：改名失败 ({1})",
+        ["Rename.SomeFailed"] = "以下云端备份文件夹没有改名：\n{0}\n\n这些备份仍在「{1}」文件夹中。",
+
+        // Pre-restore snapshots
+        ["Menu.RestoreSnapshot"] = "⏪ 从恢复前快照还原...",
+        ["Snap.Prompt"] = "选择要还原的「{0}」恢复前快照（每次恢复或下载前自动保存，保留最近 {1} 份）：",
+        ["Snap.None"] = "「{0}」还没有恢复前快照。\n每次从云端恢复或下载存档前，程序都会自动保存当前的本地存档。",
+        ["Snap.Confirm"] = "用 {1} 的快照覆盖「{0}」的本地存档吗？\n当前本地存档也会先保存为一份快照。",
+        ["Snap.Done"] = "已从快照还原「{0}」。",
+
+        // Batch download
+        ["Msg.BatchSkipLocalNewer"] = "\n\n跳过（本地比云端新，如确需覆盖请单独下载）：{0}",
+        ["Msg.BatchSkipNoBackup"] = "\n\n跳过（没有云端备份）：{0}",
+        ["Msg.BatchContinue"] = "\n\n继续吗？",
+        ["Msg.BatchNothing"] = "选中的游戏都不需要从云端下载。",
+        ["Msg.BatchDownloadDone"] = "已恢复 {0} 个游戏。",
+        ["Msg.BatchDownloadFailed"] = "\n\n{0} 个游戏恢复失败：\n{1}",
+
+        // Config file
+        ["Cfg.ReadFailed"] = "无法读取配置文件：\n{0}\n\n{1}\n\n为避免覆盖现有配置，程序将退出。请关闭占用该文件的程序后重试。",
+        ["Cfg.RecoveredFromBak"] = "配置文件 config.json 已损坏，已用上一次保存的备份 config.json.bak 恢复。\n损坏的文件保留为：{0}",
+        ["Cfg.CorruptReset"] = "配置文件 config.json 已损坏，且没有可用的备份，本次以空配置启动。\n损坏的文件保留为：{0}\n可以用记事本打开它，手动找回游戏列表。",
 
         // Cloud status
         ["Cloud.OdSet"] = "OneDrive: {0}",
@@ -543,7 +591,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Hist.Title"] = "Backup History - {0}",
         ["Hist.EmptyOd"] = "OneDrive backup is not enabled for this game, or there are no backups yet",
         ["Hist.EmptyWd"] = "WebDAV backup is not enabled for this game, or there are no backups yet",
-        ["Hist.RestoreConfirm"] = "Restore backup “{0}” over the local save?\nThe current local save will be deleted!",
+        ["Hist.RestoreConfirm"] = "Restore backup “{0}” over the local save?\nThe current local save is snapshotted first; get it back with “Restore from Pre-restore Snapshot” in the game menu.",
         ["Hist.RestoreSuccess"] = "Game “{0}” restored to backup version {1}",
         ["Hist.DeleteConfirm"] = "Delete the selected {0} backup(s)?",
         ["Hist.DeleteConfirmOd"] = "Delete the selected {0} OneDrive backup(s)?",
@@ -577,7 +625,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Msg.BatchUploadTitle"] = "Batch Upload",
         ["Msg.UploadFailed"] = "Upload failed: {0}",
         ["Msg.SelectDownloadGames"] = "Select the games to download first.",
-        ["Msg.BatchDownloadConfirm"] = "Overwrite the local saves of the selected {0} game(s) with the latest cloud backup?",
+        ["Msg.BatchDownloadConfirm"] = "Overwrite the local saves of these {0} game(s) with their latest cloud backup:\n{1}\n\nLocal saves are snapshotted first; get them back with “Restore from Pre-restore Snapshot” in the game menu.",
         ["Msg.BatchDownloadTitle"] = "Batch Overwrite Download",
         ["Msg.NoCloudBackup"] = "No cloud backups found!",
         ["Msg.RestoreConfirmTitle"] = "Overwrite Confirmation",
@@ -590,7 +638,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Msg.RestoreLocalTime"] = "[Local]: {0}",
         ["Msg.RestoreNoLocal"] = "No local",
         ["Msg.RestoreUnknown"] = "Unknown",
-        ["Msg.RestoreAsk"] = "Overwrite?",
+        ["Msg.RestoreAsk"] = "The current local save is snapshotted first.\nOverwrite?",
         ["Msg.PathMissingTitle"] = "Path Not Found",
         ["Msg.PathMissing"] = "The local save path does not exist:\n{0}\n\nIt may not be created yet or may have been deleted.",
         ["Msg.NoCloudTarget"] = "This game has no usable cloud target configured.",
@@ -674,6 +722,54 @@ public sealed class Localization : INotifyPropertyChanged
         ["Log.WebDavMkcolFail"] = "⚠ WebDAV MKCOL {0}: create directory failed",
         ["Log.WebDavNoFiles"] = "⚠ WebDAV download_dir '{0}': no files found",
         ["Log.WebDavUploadItemFail"] = "⚠ WebDAV upload failed: {0}",
+
+        // Backup safety
+        ["Log.BackupUnstable"] = "⚠ {0}: the save kept changing while it was copied; this backup may not be a consistent snapshot",
+        ["Log.CleanupFailed"] = "⚠ {0}: couldn't remove old {1} backups ({2})",
+        ["Log.WebDavMoveFallback"] = "⚠ The WebDAV server can't rename folders (MOVE returned HTTP {0}); uploading straight to the final folder instead",
+        ["Log.MonitorWatchError"] = "⚠ {0}: file watching was interrupted ({1})",
+        ["Log.AutoSyncGameFailed"] = "✗ Startup sync: {0} failed ({1})",
+        ["Log.GameSkippedInvalid"] = "⚠ Skipped game “{0}”: {1}",
+        ["Log.SnapshotSaved"] = "📸 {0}: saved the local save as snapshot {1} before overwriting it",
+        ["Log.SnapshotRestored"] = "⇩ ✓ {0}: restored from pre-restore snapshot [{1}]",
+        ["Log.RenameDone"] = "✓ Renamed the cloud backup folder “{0}” to “{1}”",
+        ["Log.RenameSkipped"] = "⚠ The game is now called “{1}”; cloud backups under the old name “{0}” were not renamed and won't show in its history",
+        ["Err.WebDavUploadIncomplete"] = "some files failed to upload",
+        ["Err.SnapshotFailed"] = "Couldn't save a pre-restore snapshot, so the restore was cancelled: {0}",
+
+        // Game names
+        ["Name.Empty"] = "The game name can't be empty.",
+        ["Name.TooLong"] = "The game name can't be longer than {0} characters.",
+        ["Name.InvalidChars"] = "The game name is used as a cloud folder name, so it can't contain \\ / : * ? \" < > | or end with a dot or space.",
+        ["Name.Reserved"] = "“{0}” is a reserved name; please choose another.",
+        ["Name.Duplicate"] = "A game named “{0}” already exists (names ignore case). Games with the same name would share one cloud folder and overwrite each other's backups.",
+
+        // Rename
+        ["Rename.Title"] = "Rename Cloud Backups",
+        ["Rename.Ask"] = "The game was renamed from “{0}” to “{1}”.\nCloud backups are stored by game name. Rename the existing backup folders too?\n\nNo: the old backups stay in the “{0}” folder and won't appear in the new name's history.",
+        ["Rename.TargetExists"] = "{0}: the target folder “{1}” already exists; not renamed",
+        ["Rename.Failed"] = "{0}: rename failed ({1})",
+        ["Rename.SomeFailed"] = "These cloud backup folders were not renamed:\n{0}\n\nThose backups are still in the “{1}” folder.",
+
+        // Pre-restore snapshots
+        ["Menu.RestoreSnapshot"] = "⏪ Restore from Pre-restore Snapshot...",
+        ["Snap.Prompt"] = "Pick a pre-restore snapshot of “{0}” (one is saved automatically before every restore or download; the latest {1} are kept):",
+        ["Snap.None"] = "“{0}” has no pre-restore snapshots yet.\nBefore restoring or downloading a save from the cloud, the app keeps a copy of the current local save.",
+        ["Snap.Confirm"] = "Overwrite the local save of “{0}” with the snapshot from {1}?\nThe current local save is snapshotted first.",
+        ["Snap.Done"] = "“{0}” was restored from the snapshot.",
+
+        // Batch download
+        ["Msg.BatchSkipLocalNewer"] = "\n\nSkipped (local save is newer; download these one at a time to overwrite): {0}",
+        ["Msg.BatchSkipNoBackup"] = "\n\nSkipped (no cloud backup): {0}",
+        ["Msg.BatchContinue"] = "\n\nContinue?",
+        ["Msg.BatchNothing"] = "None of the selected games need a download from the cloud.",
+        ["Msg.BatchDownloadDone"] = "Restored {0} game(s).",
+        ["Msg.BatchDownloadFailed"] = "\n\n{0} game(s) failed:\n{1}",
+
+        // Config file
+        ["Cfg.ReadFailed"] = "Can't read the config file:\n{0}\n\n{1}\n\nThe app will exit so the existing config isn't overwritten. Close any program using the file and try again.",
+        ["Cfg.RecoveredFromBak"] = "config.json was corrupt and has been restored from the last saved copy (config.json.bak).\nThe corrupt file was kept as: {0}",
+        ["Cfg.CorruptReset"] = "config.json was corrupt and no backup copy was available, so the app started with an empty config.\nThe corrupt file was kept as: {0}\nOpen it in a text editor to recover your game list.",
 
         ["Cloud.OdSet"] = "OneDrive: {0}",
         ["Cloud.OdUnset"] = "OneDrive: not set",
