@@ -25,17 +25,70 @@ public sealed class BackupService
 
     // ---------------- Backup ----------------
 
+    /// <summary>The backup targets a game is set up for and that are configured, in the order they run.</summary>
+    public static IReadOnlyList<string> TargetsFor(GameConfig game, AppConfig config)
+    {
+        var targets = new List<string>();
+        if (game.HasMethod(Constants.MethodOneDrive) && !string.IsNullOrEmpty(config.CloudRoot))
+            targets.Add(Constants.TargetOneDrive);
+        if (game.HasMethod(Constants.MethodWebDav) && !string.IsNullOrEmpty(config.WebDavUrl))
+            targets.Add(Constants.TargetWebDav);
+        return targets;
+    }
+
+    /// <returns>The targets that now hold the save. Use <see cref="RunBackupAsync"/> to learn why the others failed.</returns>
     public async Task<List<string>> PerformBackupAsync(
         GameConfig game,
         AppConfig config,
         string webDavPassword,
         Action<string> log,
+        CancellationToken ct = default) =>
+        (await RunBackupAsync(game, config, webDavPassword, log, ct: ct)).Succeeded;
+
+    /// <param name="onlyTargets">Restricts the run to these targets (see <see cref="TargetsFor"/>); null means all.</param>
+    public async Task<BackupResult> RunBackupAsync(
+        GameConfig game,
+        AppConfig config,
+        string webDavPassword,
+        Action<string> log,
+        IReadOnlyCollection<string>? onlyTargets = null,
         CancellationToken ct = default)
     {
-        var success = new List<string>();
+        var result = new BackupResult();
+        var targets = TargetsFor(game, config).Where(t => onlyTargets is null || onlyTargets.Contains(t)).ToList();
+        if (targets.Count == 0)
+            return result;
         var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        var toOneDrive = game.HasMethod(Constants.MethodOneDrive) && !string.IsNullOrEmpty(config.CloudRoot);
-        var toWebDav = game.HasMethod(Constants.MethodWebDav) && !string.IsNullOrEmpty(config.WebDavUrl);
+        var toOneDrive = targets.Contains(Constants.TargetOneDrive);
+        var toWebDav = targets.Contains(Constants.TargetWebDav);
+
+        void Fail(string target, string message)
+        {
+            result.Failures.Add(new BackupFailure(target, message));
+            log(Localization.T("Log.BackupFailed", game.Name, target, message));
+        }
+        // A problem with the save itself stops every target at once.
+        void FailAll(string message) => Fail(string.Join(", ", targets), message);
+
+        var pathError = SavePathPolicy.Validate(game.Save, game.Name, toOneDrive ? config.CloudRoot : "");
+        if (pathError != SavePathError.None)
+        {
+            FailAll(SavePathPolicy.Describe(pathError));
+            return result;
+        }
+        if (!Directory.Exists(game.Save))
+        {
+            FailAll(Localization.T("Err.SaveDirMissing", game.Save));
+            return result;
+        }
+        // Creating a missing root would "back up" into a plain local folder that OneDrive never syncs.
+        if (toOneDrive && !Directory.Exists(config.CloudRoot))
+        {
+            Fail(Constants.TargetOneDrive, Localization.T("Err.OneDriveRootMissing", config.CloudRoot));
+            toOneDrive = false;
+        }
+        if (!toOneDrive && !toWebDav)
+            return result;
 
         // An upload can take minutes, so WebDAV reads from a private copy: the game's own files
         // are only read for the length of one local copy and never held open during the upload.
@@ -50,10 +103,15 @@ public sealed class BackupService
                     if (!await FileUtil.CopyDirectoryConsistentAsync(game.Save, snapshot, ct))
                         log(Localization.T("Log.BackupUnstable", game.Name));
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!IsCancelled(ex, ct))
                 {
-                    log(Localization.T("Log.BackupFailed", game.Name, toOneDrive ? "OneDrive, WebDAV" : "WebDAV", ex.Message));
-                    return success;
+                    // OneDrive reads from the same copy, so it can't run either.
+                    var attempted = new List<string>();
+                    if (toOneDrive)
+                        attempted.Add(Constants.TargetOneDrive);
+                    attempted.Add(Constants.TargetWebDav);
+                    Fail(string.Join(", ", attempted), ex.Message);
+                    return result;
                 }
             }
 
@@ -62,47 +120,56 @@ public sealed class BackupService
                 try
                 {
                     await PublishToOneDriveAsync(game, config.CloudRoot, snapshot, timestamp, log, ct);
-                    success.Add("OneDrive");
+                    result.Succeeded.Add(Constants.TargetOneDrive);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!IsCancelled(ex, ct))
                 {
-                    log(Localization.T("Log.BackupFailed", game.Name, "OneDrive", ex.Message));
+                    Fail(Constants.TargetOneDrive, ex.Message);
                 }
-                if (success.Contains("OneDrive"))
+                if (result.Succeeded.Contains(Constants.TargetOneDrive))
                 {
                     try
                     {
                         await CleanupOneDriveBackupsAsync(game.Name, config.CloudRoot, game.MaxBackups, ct);
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (!IsCancelled(ex, ct))
                     {
-                        log(Localization.T("Log.CleanupFailed", game.Name, "OneDrive", ex.Message));
+                        log(Localization.T("Log.CleanupFailed", game.Name, Constants.TargetOneDrive, ex.Message));
                     }
                 }
             }
 
             if (toWebDav)
             {
-                using var wc = _webDavFactory(config.WebDavUrl, webDavPassword);
+                WebDavClient? wc = null;
                 try
-                {
-                    await PublishToWebDavAsync(wc, game.Name, config.WebDavUrl, snapshot!, timestamp, log, ct);
-                    success.Add("WebDAV");
-                }
-                catch (Exception ex)
-                {
-                    log(Localization.T("Log.BackupFailed", game.Name, "WebDAV", ex.Message));
-                }
-                if (success.Contains("WebDAV"))
                 {
                     try
                     {
-                        await CleanupWebDavBackupsAsync(wc, game.Name, game.MaxBackups, ct);
+                        // Building the client can fail too (a malformed address), so it belongs inside the try.
+                        wc = _webDavFactory(config.WebDavUrl, webDavPassword);
+                        await PublishToWebDavAsync(wc, game.Name, config.WebDavUrl, snapshot!, timestamp, log, ct);
+                        result.Succeeded.Add(Constants.TargetWebDav);
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (!IsCancelled(ex, ct))
                     {
-                        log(Localization.T("Log.CleanupFailed", game.Name, "WebDAV", ex.Message));
+                        Fail(Constants.TargetWebDav, WebDavClient.DescribeException(ex));
                     }
+                    if (wc is not null && result.Succeeded.Contains(Constants.TargetWebDav))
+                    {
+                        try
+                        {
+                            await CleanupWebDavBackupsAsync(wc, game.Name, game.MaxBackups, ct);
+                        }
+                        catch (Exception ex) when (!IsCancelled(ex, ct))
+                        {
+                            log(Localization.T("Log.CleanupFailed", game.Name, Constants.TargetWebDav, ex.Message));
+                        }
+                    }
+                }
+                finally
+                {
+                    wc?.Dispose();
                 }
             }
         }
@@ -114,10 +181,14 @@ public sealed class BackupService
             }
         }
 
-        if (success.Count > 0)
-            log(Localization.T("Log.BackupSucceeded", game.Name, string.Join(", ", success)));
-        return success;
+        if (result.Succeeded.Count > 0)
+            log(Localization.T("Log.BackupSucceeded", game.Name, string.Join(", ", result.Succeeded)));
+        return result;
     }
+
+    // Shutting down is not a failure; running out of the per-request time limit is.
+    private static bool IsCancelled(Exception ex, CancellationToken ct) =>
+        ex is OperationCanceledException && ct.IsCancellationRequested;
 
     private static async Task PublishToOneDriveAsync(GameConfig game, string cloudRoot, string? snapshot,
         string timestamp, Action<string> log, CancellationToken ct)
@@ -197,11 +268,8 @@ public sealed class BackupService
         }
     }
 
-    private static async Task UploadOrThrowAsync(WebDavClient wc, string source, string remoteDir, CancellationToken ct)
-    {
-        if (!await wc.UploadDirAsync(source, remoteDir, ct))
-            throw new IOException(Localization.T("Err.WebDavUploadIncomplete"));
-    }
+    private static Task UploadOrThrowAsync(WebDavClient wc, string source, string remoteDir, CancellationToken ct) =>
+        wc.UploadDirAsync(source, remoteDir, ct);
 
     // ---------------- Restore ----------------
 
@@ -213,7 +281,7 @@ public sealed class BackupService
         CancellationToken ct = default)
     {
         var backupPath = Path.Combine(config.CloudRoot, game.Name, backupName);
-        await RestoreWithSnapshotAsync(game, log, () => FileUtil.RestoreDirectoryAsync(game.Save,
+        await RestoreWithSnapshotAsync(game, config.CloudRoot, log, () => FileUtil.RestoreDirectoryAsync(game.Save,
             staging => FileUtil.CopyDirectoryAsync(backupPath, staging, ct), ct), ct);
         log(Localization.T("Log.RestoreOdDone", game.Name, backupName));
     }
@@ -230,7 +298,7 @@ public sealed class BackupService
         var remoteDir = $"{game.Name}/{backupName}";
         log(Localization.T("Log.RestoreWdStart", remoteDir));
         var count = 0;
-        await RestoreWithSnapshotAsync(game, log, () => FileUtil.RestoreDirectoryAsync(game.Save, async staging =>
+        await RestoreWithSnapshotAsync(game, config.CloudRoot, log, () => FileUtil.RestoreDirectoryAsync(game.Save, async staging =>
         {
             count = await wc.DownloadDirAsync(remoteDir, staging, ct);
             if (count == 0)
@@ -258,14 +326,18 @@ public sealed class BackupService
         CancellationToken ct = default)
     {
         // The current save is snapshotted too, so undoing a restore can itself be undone.
-        await RestoreWithSnapshotAsync(game, log, () => FileUtil.RestoreDirectoryAsync(game.Save,
+        await RestoreWithSnapshotAsync(game, "", log, () => FileUtil.RestoreDirectoryAsync(game.Save,
             staging => FileUtil.CopyDirectoryAsync(snapshotPath, staging, ct), ct), ct);
         log(Localization.T("Log.SnapshotRestored", game.Name, Path.GetFileName(snapshotPath)));
     }
 
-    private async Task RestoreWithSnapshotAsync(GameConfig game, Action<string> log, Func<Task> restore,
-        CancellationToken ct)
+    private async Task RestoreWithSnapshotAsync(GameConfig game, string cloudRoot, Action<string> log,
+        Func<Task> restore, CancellationToken ct)
     {
+        // A restore replaces the whole folder, so refuse one that is far bigger than a game's save.
+        var pathError = SavePathPolicy.Validate(game.Save, game.Name, cloudRoot);
+        if (pathError != SavePathError.None)
+            throw new InvalidOperationException(SavePathPolicy.Describe(pathError));
         var snapshot = await CreateRestoreSnapshotAsync(game, ct);
         try
         {
@@ -428,38 +500,80 @@ public sealed class BackupService
         string webDavPassword,
         CancellationToken ct = default)
     {
-        var result = new List<BackupEntry>();
-        if (string.IsNullOrEmpty(config.WebDavUrl))
-            return result;
         try
         {
-            using var wc = _webDavFactory(config.WebDavUrl, webDavPassword);
-            var items = await wc.PropFindAsync(game.Name, ct: ct);
-            foreach (var (href, name) in items)
-            {
-                if (!name.StartsWith("save_", StringComparison.Ordinal))
-                    continue;
-                var (ts, _) = BackupName.Parse(name);
-                var dateText = BackupName.ToDateTime(ts)?.ToString("yyyy-MM-dd HH:mm:ss") ?? Localization.T("Common.UnknownTime");
-                result.Add(new BackupEntry(name, href, dateText, 0));
-            }
-            result.Sort((a, b) => string.CompareOrdinal(b.Name, a.Name));
+            return await ListWebDavBackupsOrThrowAsync(game, config, webDavPassword, ct);
         }
         catch
         {
             // return what we have
+            return new List<BackupEntry>();
         }
+    }
+
+    /// <summary>
+    /// Like <see cref="ListWebDavBackupsAsync"/>, but a server that can't be asked is an error instead of
+    /// "no backups". A game folder that doesn't exist yet (HTTP 404) simply has no backups.
+    /// </summary>
+    public async Task<List<BackupEntry>> ListWebDavBackupsOrThrowAsync(
+        GameConfig game,
+        AppConfig config,
+        string webDavPassword,
+        CancellationToken ct = default)
+    {
+        var result = new List<BackupEntry>();
+        if (string.IsNullOrEmpty(config.WebDavUrl))
+            return result;
+        using var wc = _webDavFactory(config.WebDavUrl, webDavPassword);
+        List<(string Href, string Name)> items;
+        try
+        {
+            items = await wc.PropFindAsync(game.Name, ct: ct);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return result;
+        }
+        foreach (var (href, name) in items)
+        {
+            if (!name.StartsWith("save_", StringComparison.Ordinal))
+                continue;
+            var (ts, _) = BackupName.Parse(name);
+            var dateText = BackupName.ToDateTime(ts)?.ToString("yyyy-MM-dd HH:mm:ss") ?? Localization.T("Common.UnknownTime");
+            result.Add(new BackupEntry(name, href, dateText, 0));
+        }
+        result.Sort((a, b) => string.CompareOrdinal(b.Name, a.Name));
         return result;
+    }
+
+    /// <summary>Asks the WebDAV server whether it can be reached with the configured address and login.</summary>
+    public async Task<WebDavProbe> ProbeWebDavAsync(AppConfig config, string webDavPassword,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            using var wc = _webDavFactory(config.WebDavUrl, webDavPassword);
+            return await wc.ProbeAsync(ct);
+        }
+        catch (Exception ex) when (!IsCancelled(ex, ct))
+        {
+            return new WebDavProbe(false, 0, WebDavClient.DescribeException(ex));
+        }
     }
 
     // ---------------- Sync status ----------------
 
+    /// <param name="webDavProbe">
+    /// The outcome of <see cref="ProbeWebDavAsync"/> when the caller already has it, so checking many games
+    /// asks the server once; without it a WebDAV check probes by itself.
+    /// </param>
     public async Task<SyncStatus> GetSyncStatusAsync(
         GameConfig game,
         AppConfig config,
         string webDavPassword,
         bool checkWebDav,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        WebDavProbe? webDavProbe = null)
     {
         if (game.Paused)
             return new SyncStatus(Localization.T("Status.Paused"), SyncStatusKind.Paused);
@@ -471,7 +585,28 @@ public sealed class BackupService
         if (!hasOneDrive && !hasWebDav)
             return new SyncStatus(Localization.T("Status.NoTarget"), SyncStatusKind.None);
 
+        // Whatever makes every backup fail comes first: nothing else about the game means much until it is fixed.
+        var pathError = SavePathPolicy.Validate(game.Save, game.Name, hasOneDrive ? config.CloudRoot : "");
+        if (pathError != SavePathError.None)
+            return Problem(Localization.T("Status.PathInvalid"), SavePathPolicy.Describe(pathError));
+        if (hasOneDrive && !Directory.Exists(config.CloudRoot))
+            return Problem(Localization.T("Status.OneDriveMissing"),
+                Localization.T("Err.OneDriveRootMissing", config.CloudRoot));
+        if (hasWebDav)
+        {
+            var urlError = WebDavUrl.Normalize(config.WebDavUrl, out _);
+            if (urlError != WebDavUrlError.None)
+                return Problem(Localization.T("Status.WebDavUrlInvalid"), WebDavUrl.Describe(urlError, config.WebDavUrl));
+            if (checkWebDav)
+            {
+                var probe = webDavProbe ?? await ProbeWebDavAsync(config, webDavPassword, ct);
+                if (!probe.Ok)
+                    return Problem(WebDavProblemText(probe.Status), probe.Message);
+            }
+        }
+
         var localTime = FileUtil.GetLatestMTime(game.Save);
+        DateTime? lastBackup = null;
         long odCloudTime = 0;
         if (hasOneDrive)
         {
@@ -480,6 +615,7 @@ public sealed class BackupService
             {
                 var latestDir = Path.Combine(config.CloudRoot, game.Name, odNames[0]);
                 odCloudTime = FileUtil.GetLatestMTime(latestDir);
+                lastBackup = Newer(lastBackup, BackupTimeOf(odNames[0]));
             }
         }
 
@@ -487,9 +623,18 @@ public sealed class BackupService
         long wdDirTs = 0;
         if (hasWebDav && checkWebDav)
         {
-            var wdBackups = await ListWebDavBackupsAsync(game, config, webDavPassword, ct);
+            List<BackupEntry> wdBackups;
+            try
+            {
+                wdBackups = await ListWebDavBackupsOrThrowAsync(game, config, webDavPassword, ct);
+            }
+            catch (Exception ex) when (!IsCancelled(ex, ct))
+            {
+                return Problem(WebDavProblemText(WebDavStatusOf(ex)), WebDavClient.DescribeException(ex));
+            }
             if (wdBackups.Count > 0)
             {
+                lastBackup = Newer(lastBackup, BackupTimeOf(wdBackups[0].Name));
                 var (ts, bkMtime) = BackupName.Parse(wdBackups[0].Name);
                 var dt = BackupName.ToDateTime(ts);
                 if (bkMtime > 0)
@@ -504,7 +649,7 @@ public sealed class BackupService
         }
 
         if (hasWebDav && !checkWebDav && odCloudTime == 0)
-            return new SyncStatus(Localization.T("Status.WebDavUnchecked"), SyncStatusKind.None);
+            return new SyncStatus(Localization.T("Status.WebDavUnchecked"), SyncStatusKind.None, lastBackup);
 
         long cloudTime;
         if (odCloudTime > 0)
@@ -515,18 +660,43 @@ public sealed class BackupService
             cloudTime = wdDirTs;
 
         if (localTime == 0 && cloudTime == 0)
-            return new SyncStatus(Localization.T("Status.NoSaves"), SyncStatusKind.None);
+            return new SyncStatus(Localization.T("Status.NoSaves"), SyncStatusKind.None, lastBackup);
         if (cloudTime == 0)
-            return new SyncStatus(Localization.T("Status.WaitingFirst"), SyncStatusKind.LocalNew);
+            return new SyncStatus(Localization.T("Status.WaitingFirst"), SyncStatusKind.LocalNew, lastBackup);
         if (localTime == 0)
-            return new SyncStatus(Localization.T("Status.LocalEmpty"), SyncStatusKind.CloudNew);
+            return new SyncStatus(Localization.T("Status.LocalEmpty"), SyncStatusKind.CloudNew, lastBackup);
         if (localTime - cloudTime > Constants.SyncThresholdSeconds)
-            return new SyncStatus(Localization.T("Status.LocalNew"), SyncStatusKind.LocalNew);
+            return new SyncStatus(Localization.T("Status.LocalNew"), SyncStatusKind.LocalNew, lastBackup);
         if ((odCloudTime > 0 || wdBackupMTime > 0) &&
             cloudTime - localTime > Constants.SyncThresholdSeconds)
-            return new SyncStatus(Localization.T("Status.CloudNew"), SyncStatusKind.CloudNew);
-        return new SyncStatus(Localization.T("Status.Synced"), SyncStatusKind.Synced);
+            return new SyncStatus(Localization.T("Status.CloudNew"), SyncStatusKind.CloudNew, lastBackup);
+        return new SyncStatus(Localization.T("Status.Synced"), SyncStatusKind.Synced, lastBackup);
     }
+
+    private static SyncStatus Problem(string text, string detail) =>
+        new(text, SyncStatusKind.Error, Detail: detail);
+
+    /// <summary>Short label for a WebDAV problem; 0 means the server couldn't be reached at all.</summary>
+    private static string WebDavProblemText(int status) => status switch
+    {
+        401 or 403 => Localization.T("Status.WebDavAuth"),
+        404 => Localization.T("Status.WebDavNotFound"),
+        0 => Localization.T("Status.WebDavUnreachable"),
+        _ => Localization.T("Status.WebDavError", status)
+    };
+
+    private static int WebDavStatusOf(Exception ex) => ex switch
+    {
+        WebDavException webDav => webDav.StatusCode,
+        HttpRequestException { StatusCode: { } code } => (int)code,
+        _ => 0
+    };
+
+    private static DateTime? BackupTimeOf(string backupName) =>
+        BackupName.ToDateTime(BackupName.Parse(backupName).Timestamp);
+
+    private static DateTime? Newer(DateTime? a, DateTime? b) =>
+        a is null ? b : b is null ? a : a > b ? a : b;
 
     /// <param name="preference">Overrides <see cref="AppConfig.DefaultDownloadSource"/> for this lookup.</param>
     public async Task<BackupSource?> FindLatestSourceAsync(

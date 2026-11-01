@@ -29,4 +29,13 @@ public static class Constants
 
     public const string AutostartRegPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     public const string AutostartRegName = "GameCloudSync";
+    // Passed by the autostart entry so a login start goes straight to the tray.
+    public const string StartMinimizedArg = "--minimized";
+
+    public const string LogDirName = "logs";
+    public const string LogFileName = "gamecloudsync.log";
+    public const long MaxLogFileBytes = 1_000_000;
+
+    public const string TargetOneDrive = "OneDrive";
+    public const string TargetWebDav = "WebDAV";
 }

@@ -15,6 +15,7 @@ public sealed class MonitoringServiceTests : IDisposable
         _save = Path.Combine(_root, "save");
         _cloud = Path.Combine(_root, "cloud");
         Directory.CreateDirectory(_save);
+        Directory.CreateDirectory(_cloud);
     }
 
     public void Dispose()

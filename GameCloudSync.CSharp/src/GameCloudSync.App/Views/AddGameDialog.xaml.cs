@@ -76,6 +76,16 @@ public partial class AddGameDialog : Window
             NameBox.SelectAll();
             return;
         }
+        // Backups and restores act on the whole folder, so it has to be a game's own save folder.
+        var pathError = SavePathPolicy.Validate(save, name, OneDriveCheck.IsChecked == true ? _config.CloudRoot : "");
+        if (pathError != SavePathError.None)
+        {
+            MessageBox.Show(this, SavePathPolicy.Describe(pathError), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            SaveBox.Focus();
+            SaveBox.SelectAll();
+            return;
+        }
         var methods = new List<string>();
         if (OneDriveCheck.IsChecked == true)
         {

@@ -9,7 +9,9 @@ A Windows desktop app that monitors game saves and backs them up to OneDrive and
 - Backup history: browse, restore, delete, batch download
 - Pre-restore snapshots of the local save; backups are published only once complete, so failures leave no partial backup
 - Cloud config backup, new-game detection, one-click merge
-- Tray icon, auto-start, single-instance wake-up
+- Tray icon, auto-start (straight to the tray), single-instance wake-up
+- Failed backups raise a notification, turn the tray red and are explained in the UI; they are retried automatically; the full log goes to the `logs` folder
+- Save folders that are far too broad (a whole drive, the user profile, Documents) are refused; the WebDAV address is checked before saving
 - WebDAV password encrypted with DPAPI
 - Bilingual UI (switch in Settings)
 

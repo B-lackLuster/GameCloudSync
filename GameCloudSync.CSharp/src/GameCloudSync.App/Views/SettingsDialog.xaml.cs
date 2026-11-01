@@ -1,8 +1,10 @@
+using System.IO;
 using System.Windows;
 using GameCloudSync.App.Services;
 using GameCloudSync.App.ViewModels;
 using GameCloudSync.Core;
 using GameCloudSync.Core.Services;
+using GameCloudSync.Core.Util;
 using Microsoft.Win32;
 using Localization = GameCloudSync.Core.Services.Localization;
 
@@ -53,10 +55,16 @@ public partial class SettingsDialog : Window
 
     private async void OnTestWebDav(object sender, RoutedEventArgs e)
     {
-        var url = UrlBox.Text.Trim();
+        var urlError = WebDavUrl.Normalize(UrlBox.Text, out var url);
         if (url.Length == 0)
         {
             TestResult.Text = Localization.T("Set.TestNeedUrl");
+            return;
+        }
+        if (urlError != WebDavUrlError.None)
+        {
+            TestResult.Text = WebDavUrl.Describe(urlError, url);
+            TestResult.Foreground = (System.Windows.Media.Brush)FindResource("DangerBrush");
             return;
         }
         TestButton.IsEnabled = false;
@@ -64,9 +72,10 @@ public partial class SettingsDialog : Window
         try
         {
             using var wc = new WebDavClient(url, UserBox.Text.Trim(), PassBox.Password);
-            var ok = await wc.TestConnectionAsync();
-            TestResult.Text = ok ? Localization.T("Set.TestOk") : Localization.T("Set.TestFail");
-            TestResult.Foreground = ok
+            var probe = await wc.ProbeAsync();
+            // Say what is wrong (wrong password, wrong path, server down) instead of a bare "failed".
+            TestResult.Text = probe.Ok ? Localization.T("Set.TestOk") : Localization.T("Set.TestFailDetail", probe.Message);
+            TestResult.Foreground = probe.Ok
                 ? (System.Windows.Media.Brush)FindResource("SuccessBrush")
                 : (System.Windows.Media.Brush)FindResource("DangerBrush");
         }
@@ -84,7 +93,6 @@ public partial class SettingsDialog : Window
     private void OnSave(object sender, RoutedEventArgs e)
     {
         var newCloud = CloudRootBox.Text.Trim();
-        var newUrl = UrlBox.Text.Trim();
         var newUser = UserBox.Text.Trim();
         var newPass = PassBox.Password;
         if (!int.TryParse(MaxBox.Text, out var max) || max < 1 || max > 99)
@@ -93,6 +101,20 @@ public partial class SettingsDialog : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+        // An address that can never work (no http/https, stray "?") would fail every backup, so it is caught here.
+        // A missing "https://" is added, and the box shows what is actually saved.
+        var urlError = WebDavUrl.Normalize(UrlBox.Text, out var newUrl);
+        if (urlError != WebDavUrlError.None)
+        {
+            MessageBox.Show(this, WebDavUrl.Describe(urlError, newUrl), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            UrlBox.Focus();
+            UrlBox.SelectAll();
+            return;
+        }
+        UrlBox.Text = newUrl;
+        if (newCloud.Length > 0 && newCloud != _vm.Config.CloudRoot && !CheckNewCloudRoot(newCloud))
+            return;
 
         if (newCloud != _vm.Config.CloudRoot)
         {
@@ -149,6 +171,29 @@ public partial class SettingsDialog : Window
         _vm.ApplyConfigChange(_ => { });
         _vm.AppendLog(Localization.T("Set.Saved"));
         DialogResult = true;
+    }
+
+    /// <summary>
+    /// A game whose save folder is (or contains) the new backup folder would trigger a backup with every backup.
+    /// A folder that doesn't exist makes every backup fail, which is allowed only if the user insists.
+    /// </summary>
+    private bool CheckNewCloudRoot(string cloudRoot)
+    {
+        var conflicts = _vm.Config.Games
+            .Where(g => g.HasMethod(Constants.MethodOneDrive)
+                        && SavePathPolicy.Validate(g.Save, g.Name, cloudRoot) == SavePathError.ContainsBackupFolder)
+            .Select(g => g.Name)
+            .ToList();
+        if (conflicts.Count > 0)
+        {
+            MessageBox.Show(this, Localization.T("Set.CloudRootConflict", string.Join("\n", conflicts)),
+                Localization.T("Common.Error"), MessageBoxButton.OK, MessageBoxImage.Warning);
+            CloudRootBox.Focus();
+            return false;
+        }
+        return Directory.Exists(cloudRoot)
+               || MessageBox.Show(this, Localization.T("Set.CloudRootMissing", cloudRoot), Localization.T("Common.Warning"),
+                   MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
     }
 
     private void OnCancel(object sender, RoutedEventArgs e)

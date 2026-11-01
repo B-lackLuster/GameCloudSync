@@ -18,6 +18,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly CloudConfigService _cloudConfigService;
     private readonly MonitoringService _monitoring;
     private readonly SynchronizationContext _ui;
+    private readonly FileLog? _fileLog;
 
     private AppConfig _config;
     private string _webDavPassword = "";
@@ -35,7 +36,8 @@ public sealed class MainViewModel : ObservableObject
         BackupService backupService,
         CloudConfigService cloudConfigService,
         MonitoringService monitoring,
-        SynchronizationContext ui)
+        SynchronizationContext ui,
+        FileLog? fileLog = null)
     {
         _configStore = configStore;
         _secretStore = secretStore;
@@ -43,6 +45,7 @@ public sealed class MainViewModel : ObservableObject
         _cloudConfigService = cloudConfigService;
         _monitoring = monitoring;
         _ui = ui;
+        _fileLog = fileLog;
         _config = configStore.Load();
         Dashboard = new DashboardViewModel(this);
         Games.CollectionChanged += (_, _) => OnPropertyChanged(nameof(GameCountText));
@@ -54,7 +57,8 @@ public sealed class MainViewModel : ObservableObject
             _monitoredCount = _monitoring.MonitoredCount;
             OnPropertyChanged(nameof(MonitorStateText));
         });
-        _monitoring.BackupFinished += () => RunOnUi(() => _ = RefreshGamesAsync());
+        _monitoring.BackupFinished += () => RunOnUi(() => _ = RefreshGamesAsync(checkWebDav: HasWebDavGames));
+        _monitoring.BackupAttempted += attempt => RunOnUi(() => OnBackupAttempted(attempt));
         Localization.Instance.LanguageChanged += () => RunOnUi(() =>
         {
             OnPropertyChanged(nameof(CloudStatusText));
@@ -74,6 +78,9 @@ public sealed class MainViewModel : ObservableObject
     public BackupService BackupService => _backupService;
     public CloudConfigService CloudConfigService => _cloudConfigService;
     public MonitoringService Monitoring => _monitoring;
+
+    /// <summary>The folder holding the log files, for the "open log folder" button.</summary>
+    public string LogFolder => _fileLog?.Directory ?? Path.Combine(_configStore.AppDir, Constants.LogDirName);
 
     public ObservableCollection<GameItemViewModel> Games { get; } = new();
     public ObservableCollection<string> Logs { get; } = new();
@@ -183,7 +190,7 @@ public sealed class MainViewModel : ObservableObject
         AppendLog(Localization.T("Log.Welcome", Games.Count));
         _ = RefreshGamesAsync();
         if (_config.WebDavUrl.Length > 0)
-            _ = Task.Run(TestWebDavAsync);
+            _ = Task.Run(CheckWebDavAsync);
     }
 
     public void AutoStart()
@@ -226,20 +233,14 @@ public sealed class MainViewModel : ObservableObject
 
     public event Action? ShowWindowRequested;
 
-    private async Task TestWebDavAsync()
+    /// <summary>Asks the server once at startup, says in the log what is wrong if it can't be used, then shows each game's real status.</summary>
+    private async Task CheckWebDavAsync()
     {
-        try
-        {
-            using var wc = CreateWebDavClient();
-            if (await wc.TestConnectionAsync())
-                AppendLog(Localization.T("Log.WebDavOk", _config.WebDavUrl));
-            else
-                AppendLog(Localization.T("Log.WebDavFail", _config.WebDavUrl));
-        }
-        catch (Exception ex)
-        {
-            AppendLog(Localization.T("Log.WebDavError", ex.Message));
-        }
+        var probe = await _backupService.ProbeWebDavAsync(_config, _webDavPassword);
+        AppendLog(probe.Ok
+            ? Localization.T("Log.WebDavOk", _config.WebDavUrl)
+            : Localization.T("Log.WebDavProbeFail", _config.WebDavUrl, probe.Message));
+        RunOnUi(() => _ = RefreshGamesAsync(checkWebDav: true, probe));
     }
 
     private WebDavClient CreateWebDavClient()
@@ -251,39 +252,88 @@ public sealed class MainViewModel : ObservableObject
 
     // ---------------- List & status ----------------
 
-    public async Task RefreshGamesAsync(bool checkWebDav = false)
+    private bool HasWebDavGames =>
+        !string.IsNullOrEmpty(_config.WebDavUrl) && Games.Any(g => g.IsWebDav && !g.IsPaused);
+
+    /// <param name="probe">The answer of an earlier <see cref="BackupService.ProbeWebDavAsync"/>, so the server isn't asked again.</param>
+    public async Task RefreshGamesAsync(bool checkWebDav = false, WebDavProbe? probe = null)
     {
+        // One question to the server covers every game; asking per game would repeat the same failure N times.
+        if (checkWebDav && probe is null && HasWebDavGames)
+            probe = await _backupService.ProbeWebDavAsync(_config, _webDavPassword);
         foreach (var item in Games.ToList())
         {
             item.Status = await _backupService.GetSyncStatusAsync(
-                item.Game, _config, _webDavPassword, checkWebDav);
+                item.Game, _config, _webDavPassword, checkWebDav, webDavProbe: probe);
         }
+    }
+
+    /// <summary>Brings the "5 min ago" texts on the game cards up to date.</summary>
+    public void RefreshTimes()
+    {
+        foreach (var item in Games)
+            item.RefreshDetail();
     }
 
     // ---------------- Backup / restore ----------------
 
-    public async Task ForceBackupAsync()
+    /// <returns>One line per game that could not be backed up, with the reason; empty when all went well.</returns>
+    public async Task<List<string>> ForceBackupAsync()
     {
+        var failures = new List<string>();
         var selected = _selectedGames
             .Where(g => g.Game.BackupMethods.Count > 0 && Directory.Exists(g.Game.Save))
             .ToList();
         if (selected.Count == 0)
-            return;
+            return failures;
         IsBusy = true;
         try
         {
             foreach (var item in selected)
             {
-                await _backupService.PerformBackupAsync(
-                    item.Game, _config, _webDavPassword, AppendLog);
+                var result = await _backupService.RunBackupAsync(item.Game, _config, _webDavPassword, AppendLog);
+                item.SetLastFailure(result.HasFailures ? result.FailureSummary : null);
+                if (result.HasFailures)
+                    failures.Add($"{item.Name}: {result.FailureSummary}");
             }
         }
         finally
         {
             IsBusy = false;
-            await RefreshGamesAsync();
+            await RefreshGamesAsync(checkWebDav: HasWebDavGames);
         }
+        return failures;
     }
+
+    /// <summary>Backs up a game that was just added, without holding anything up; failures are shown like any other.</summary>
+    public async Task BackupNewGameAsync(GameConfig game)
+    {
+        var result = await Task.Run(() => _backupService.RunBackupAsync(game, _config, _webDavPassword, AppendLog));
+        RunOnUi(() =>
+        {
+            var item = Games.FirstOrDefault(g => ReferenceEquals(g.Game, game));
+            item?.SetLastFailure(result.HasFailures ? result.FailureSummary : null);
+            if (result.HasFailures)
+                RaiseFailureNotice(game.Name, result.FailureSummary);
+            _ = RefreshGamesAsync(checkWebDav: HasWebDavGames);
+        });
+    }
+
+    /// <summary>Raised with a title and text when a game's backups start failing and the user should hear about it.</summary>
+    public event Action<string, string>? FailureNotice;
+
+    private void OnBackupAttempted(BackupAttempt attempt)
+    {
+        // The monitor works on its own copy of the config, so games are matched by name.
+        var item = Games.FirstOrDefault(g => string.Equals(g.Name, attempt.Game.Name, StringComparison.OrdinalIgnoreCase));
+        item?.SetLastFailure(attempt.Result.HasFailures ? attempt.Result.FailureSummary : null);
+        if (attempt.Result.HasFailures && attempt.IsNewFailure)
+            RaiseFailureNotice(attempt.Game.Name, attempt.Result.FailureSummary);
+    }
+
+    private void RaiseFailureNotice(string gameName, string reason) =>
+        FailureNotice?.Invoke(Localization.T("Notify.BackupFailedTitle"),
+            Localization.T("Notify.BackupFailedBody", gameName, reason));
 
     public async Task<List<BackupSource>> CollectRestoreSourcesAsync(GameItemViewModel item)
     {
@@ -521,10 +571,28 @@ public sealed class MainViewModel : ObservableObject
                     AppendLog(Localization.T("Log.GameSkippedInvalid", game.Name, GameNames.Describe(nameError, game.Name)));
                 continue;
             }
+            if (SavePathProblem(game) is { } pathProblem)
+            {
+                if (logInvalid)
+                    AppendLog(Localization.T("Log.GameSkippedInvalid", game.Name, pathProblem));
+                continue;
+            }
             if (known.Add(game.Name))
                 result.Add(game);
         }
         return result;
+    }
+
+    /// <summary>
+    /// Why a game coming from another PC's config can't be taken over (judged on the path as it will be
+    /// used here), or null when its save path is fine.
+    /// </summary>
+    public string? SavePathProblem(GameConfig game)
+    {
+        var toOneDrive = game.BackupMethods?.Contains(Constants.MethodOneDrive) == true;
+        var error = SavePathPolicy.Validate(FileUtil.FixSavePath(game.Save ?? ""), game.Name,
+            toOneDrive ? _config.CloudRoot : "");
+        return error == SavePathError.None ? null : SavePathPolicy.Describe(error);
     }
 
     public async Task<int> ApplyPendingCloudUpdateAsync()
@@ -632,7 +700,14 @@ public sealed class MainViewModel : ObservableObject
         if (localTime - cloudTime > Constants.SyncThresholdSeconds)
         {
             AppendLog(Localization.T("Log.AutoSyncUpload", game.Name));
-            await _backupService.PerformBackupAsync(game, _config, _webDavPassword, AppendLog);
+            var result = await _backupService.RunBackupAsync(game, _config, _webDavPassword, AppendLog);
+            RunOnUi(() =>
+            {
+                var item = Games.FirstOrDefault(g => ReferenceEquals(g.Game, game));
+                item?.SetLastFailure(result.HasFailures ? result.FailureSummary : null);
+                if (result.HasFailures)
+                    RaiseFailureNotice(game.Name, result.FailureSummary);
+            });
             await Task.Delay(1000);
         }
         else if (cloudTime - localTime > Constants.SyncThresholdSeconds && source is not null)
@@ -651,11 +726,20 @@ public sealed class MainViewModel : ObservableObject
 
     // ---------------- Logging / UI marshalling ----------------
 
+    /// <summary>Writes the message to the log file and to the activity list.</summary>
     public void AppendLog(string message)
     {
+        _fileLog?.Write(message);
+        ShowLog(message);
+    }
+
+    /// <summary>Adds a message to the activity list only, for callers that have already written it to the log file.</summary>
+    public void ShowLog(string message)
+    {
+        var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
         RunOnUi(() =>
         {
-            Logs.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
+            Logs.Add(line);
             while (Logs.Count > 400)
                 Logs.RemoveAt(0);
         });

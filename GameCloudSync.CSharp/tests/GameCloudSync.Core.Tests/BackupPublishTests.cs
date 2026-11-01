@@ -15,6 +15,7 @@ public sealed class BackupPublishTests : IDisposable
         _save = Path.Combine(_root, "save");
         _cloud = Path.Combine(_root, "cloud");
         Directory.CreateDirectory(_save);
+        Directory.CreateDirectory(_cloud);
         for (var i = 0; i < 12; i++)
             File.WriteAllText(Path.Combine(_save, $"slot{i:00}.sav"), new string('x', 50_000));
     }

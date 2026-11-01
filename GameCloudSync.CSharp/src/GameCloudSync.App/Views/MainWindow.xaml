@@ -6,7 +6,7 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:loc="clr-namespace:GameCloudSync.Core.Services;assembly=GameCloudSync.Core"
         Title="{Binding [Win.Title], Source={x:Static loc:Localization.Instance}}"
-        Width="1360" Height="920" MinWidth="1120" MinHeight="740"
+        Width="1280" Height="820" MinWidth="900" MinHeight="520"
         WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterScreen" Icon="/Assets/icon.ico">
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="52" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
@@ -64,8 +64,9 @@
                         </Border>
                     </WrapPanel>
                     <TextBlock Text="{Binding SavePath}" FontSize="12" Margin="0,7,0,0" Foreground="{StaticResource TextSecBrush}" TextTrimming="CharacterEllipsis" ToolTip="{Binding SavePath}" />
+                    <TextBlock Text="{Binding DetailText}" FontSize="11" Margin="0,4,0,0" Foreground="{Binding DetailBrush}" TextTrimming="CharacterEllipsis" ToolTip="{Binding DetailText}" Visibility="{Binding HasDetail, Converter={x:Static vm:Converters.BoolToVisibility}}" />
                 </StackPanel>
-                <Border Grid.Column="2" Style="{StaticResource StatusBadge}" Background="{Binding StatusBgBrush}" VerticalAlignment="Center">
+                <Border Grid.Column="2" Style="{StaticResource StatusBadge}" Background="{Binding StatusBgBrush}" VerticalAlignment="Center" ToolTip="{Binding StatusTooltip}">
                     <TextBlock Text="{Binding StatusText}" FontSize="12" Foreground="{Binding StatusBrush}" />
                 </Border>
                 <Button Grid.Column="3" Content="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="16" Style="{StaticResource SecondaryButton}" Padding="0" Width="32" MinHeight="32" HorizontalAlignment="Right" VerticalAlignment="Center" Click="OnGameActions" ToolTip="{Binding [Main.GameActions], Source={x:Static loc:Localization.Instance}}" AutomationProperties.Name="{Binding [Main.GameActions], Source={x:Static loc:Localization.Instance}}" />
@@ -143,10 +144,24 @@
                 </Grid>
                 <Grid Grid.Row="1">
                     <!-- OVERVIEW: every figure comes from the actual game collection. -->
-                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="{Binding Dashboard.IsOverview, Converter={x:Static vm:Converters.BoolToVisibility}}">
+                    <ScrollViewer x:Name="OverviewScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" SizeChanged="OnOverviewSizeChanged" Visibility="{Binding Dashboard.IsOverview, Converter={x:Static vm:Converters.BoolToVisibility}}">
                         <StackPanel Margin="0,0,4,0">
-                            <UniformGrid Columns="4" Margin="-8,0,-8,0">
-                                <Border Style="{StaticResource DashboardCard}" Margin="8,0" Height="208">
+                            <!-- Backups that fail or can't work stay in view here, whichever way the window is sized. -->
+                            <Border Style="{StaticResource DashboardCard}" Margin="0,0,0,18" Padding="22,18" BorderThickness="1" BorderBrush="{StaticResource DangerBrush}" Visibility="{Binding Dashboard.HasProblems, Converter={x:Static vm:Converters.BoolToVisibility}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,16,0">
+                                        <TextBlock Text="{Binding Dashboard.ProblemTitle}" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource DangerBrush}" />
+                                        <ItemsControl ItemsSource="{Binding Dashboard.ProblemLines}" Margin="0,8,0,0">
+                                            <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource TextSecBrush}" Margin="0,2" /></DataTemplate></ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Content="{Binding [Shell.OpenLibrary], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}" Click="OnOpenLibrary" VerticalAlignment="Top" />
+                                </Grid>
+                            </Border>
+                            <!-- Four cards in a row when there is room, two by two when there is not (see OnOverviewSizeChanged). -->
+                            <UniformGrid x:Name="OverviewCards" Columns="4" Margin="-8,0,-8,-16">
+                                <Border Style="{StaticResource DashboardCard}" Margin="8,0,8,16" Height="208">
                                     <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                                         <TextBlock Text="{Binding [Shell.Engine], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource TextSecBrush}" />
                                         <Ellipse Width="8" Height="8" Fill="{Binding MonitorStateBrush}" HorizontalAlignment="Right" VerticalAlignment="Center" />
@@ -154,21 +169,21 @@
                                         <Button Grid.Row="2" Content="{Binding MonitorButtonText}" Style="{StaticResource QuietButton}" Foreground="{StaticResource PrimaryBrush}" Padding="0,5" HorizontalAlignment="Left" Click="OnToggleMonitoring" />
                                     </Grid>
                                 </Border>
-                                <Border Style="{StaticResource DashboardCard}" Margin="8,0" Height="208">
+                                <Border Style="{StaticResource DashboardCard}" Margin="8,0,8,16" Height="208">
                                     <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                                         <TextBlock Text="{Binding [Shell.GameTotal], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource TextSecBrush}" />
                                         <TextBlock Grid.Row="1" Text="{Binding Dashboard.TotalGames}" FontSize="48" FontWeight="SemiBold" Margin="0,10,0,0" />
                                         <Button Grid.Row="2" Content="{Binding [Btn.AddGame], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource QuietButton}" Foreground="{StaticResource PrimaryBrush}" Padding="0,5" HorizontalAlignment="Left" Click="OnAddGame" />
                                     </Grid>
                                 </Border>
-                                <Border Style="{StaticResource DashboardCard}" Margin="8,0" Height="208">
+                                <Border Style="{StaticResource DashboardCard}" Margin="8,0,8,16" Height="208">
                                     <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                                         <TextBlock Text="OneDrive" Foreground="{StaticResource TextSecBrush}" />
                                         <StackPanel Grid.Row="1" Margin="0,19,0,0"><TextBlock Text="{Binding Dashboard.OneDriveState}" FontSize="23" FontWeight="SemiBold" /><TextBlock Text="{Binding Dashboard.OneDrivePath}" FontSize="11" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Dashboard.OneDrivePath}" Margin="0,10,0,0" /></StackPanel>
                                         <Border Grid.Row="2" Height="3" Background="#8C7AE8" CornerRadius="1.5" />
                                     </Grid>
                                 </Border>
-                                <Border Style="{StaticResource DashboardCard}" Margin="8,0" Height="208">
+                                <Border Style="{StaticResource DashboardCard}" Margin="8,0,8,16" Height="208">
                                     <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                                         <TextBlock Text="WebDAV" Foreground="{StaticResource TextSecBrush}" />
                                         <StackPanel Grid.Row="1" Margin="0,19,0,0"><TextBlock Text="{Binding Dashboard.WebDavState}" FontSize="23" FontWeight="SemiBold" /><TextBlock Text="{Binding Dashboard.WebDavAddress}" FontSize="11" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Dashboard.WebDavAddress}" Margin="0,10,0,0" /></StackPanel>
@@ -328,8 +343,11 @@
         </Grid>
                     <Border Style="{StaticResource DashboardCard}" Visibility="{Binding Dashboard.IsActivity, Converter={x:Static vm:Converters.BoolToVisibility}}">
                         <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-                            <StackPanel Margin="0,0,100,20"><TextBlock Text="{Binding [Main.LogTitle], Source={x:Static loc:Localization.Instance}}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{Binding [Shell.SessionOnly], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,8,0,0" /></StackPanel>
-                            <Button Content="{Binding [Btn.ClearLog], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}" Click="OnClearLog" HorizontalAlignment="Right" VerticalAlignment="Top" />
+                            <StackPanel Margin="0,0,280,20"><TextBlock Text="{Binding [Main.LogTitle], Source={x:Static loc:Localization.Instance}}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{Binding [Shell.SessionOnly], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap" /></StackPanel>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+                                <Button Content="{Binding [Btn.OpenLogFolder], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}" Click="OnOpenLogFolder" Margin="0,0,8,0" />
+                                <Button Content="{Binding [Btn.ClearLog], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}" Click="OnClearLog" />
+                            </StackPanel>
                             <ListBox x:Name="LogList" Grid.Row="1" ItemsSource="{Binding Logs}" FontFamily="{StaticResource MonoFont}" FontSize="12" Foreground="{StaticResource TextSecBrush}" Background="Transparent" BorderThickness="0" SelectionMode="Single">
                                 <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" /></DataTemplate></ListBox.ItemTemplate>
                                 <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="Padding" Value="0,10" /><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem"><Border BorderBrush="#2D3839" BorderThickness="0,0,0,1" Padding="{TemplateBinding Padding}"><ContentPresenter /></Border></ControlTemplate></Setter.Value></Setter></Style></ListBox.ItemContainerStyle>

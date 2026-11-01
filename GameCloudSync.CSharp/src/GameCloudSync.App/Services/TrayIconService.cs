@@ -9,6 +9,15 @@ namespace GameCloudSync.App.Services;
 
 public sealed class TrayIconService : IDisposable
 {
+    private enum TrayState { Idle, Monitoring, Problem }
+
+    // One icon per state, created on first use. Building a new one at every change would leak a GDI handle each time.
+    private static readonly Dictionary<TrayState, Icon> Icons = new();
+
+    // The balloon's own limits: 63 characters for the title, 255 for the text.
+    private const int MaxBalloonTitle = 63;
+    private const int MaxBalloonText = 250;
+
     private readonly TaskbarIcon _tray;
 
     public event Action? ShowWindowRequested;
@@ -19,7 +28,7 @@ public sealed class TrayIconService : IDisposable
     public TrayIconService()
     {
         _tray = new TaskbarIcon();
-        _tray.Icon = LoadIcon(active: false);
+        _tray.Icon = IconFor(TrayState.Idle);
         _tray.ToolTipText = Localization.T("Tray.TooltipIdle");
         _tray.TrayMouseDoubleClick += (_, _) => ShowWindowRequested?.Invoke();
         RebuildMenu();
@@ -37,13 +46,27 @@ public sealed class TrayIconService : IDisposable
         _tray.ContextMenu = menu;
     }
 
-    public void SetMonitoring(bool monitoring, int count)
+    /// <param name="problems">Games whose backups need attention; they turn the icon red.</param>
+    public void SetState(bool monitoring, int count, int problems)
     {
-        _tray.Icon = LoadIcon(monitoring);
-        _tray.ToolTipText = monitoring
-            ? Localization.T("Tray.TooltipMonitoring", count)
-            : Localization.T("Tray.TooltipIdle");
+        var state = problems > 0 ? TrayState.Problem : monitoring ? TrayState.Monitoring : TrayState.Idle;
+        _tray.Icon = IconFor(state);
+        _tray.ToolTipText = problems > 0
+            ? Localization.T("Tray.TooltipProblems", problems)
+            : monitoring
+                ? Localization.T("Tray.TooltipMonitoring", count)
+                : Localization.T("Tray.TooltipIdle");
     }
+
+    /// <summary>Pops a Windows notification from the tray icon.</summary>
+    public void ShowNotification(string title, string message, bool isError)
+    {
+        _tray.ShowBalloonTip(Truncate(title, MaxBalloonTitle), Truncate(message, MaxBalloonText),
+            isError ? BalloonIcon.Error : BalloonIcon.Info);
+    }
+
+    private static string Truncate(string text, int max) =>
+        text.Length <= max ? text : text[..(max - 1)] + "…";
 
     private static MenuItem MenuItem(string header, Action action)
     {
@@ -52,9 +75,20 @@ public sealed class TrayIconService : IDisposable
         return item;
     }
 
-    private static Icon LoadIcon(bool active)
+    private static Icon IconFor(TrayState state)
     {
-        var color = active ? Color.FromArgb(50, 205, 50) : Color.FromArgb(169, 169, 169);
+        if (!Icons.TryGetValue(state, out var icon))
+            Icons[state] = icon = DrawIcon(state switch
+            {
+                TrayState.Monitoring => Color.FromArgb(50, 205, 50),
+                TrayState.Problem => Color.FromArgb(239, 83, 80),
+                _ => Color.FromArgb(169, 169, 169)
+            });
+        return icon;
+    }
+
+    private static Icon DrawIcon(Color color)
+    {
         using var bmp = new Bitmap(64, 64);
         using (var g = Graphics.FromImage(bmp))
         {

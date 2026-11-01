@@ -297,9 +297,12 @@
                     <Setter Property="Template">
                         <Setter.Value>
                             <ControlTemplate TargetType="ListBoxItem">
+                                <!-- Width follows the list's viewport: text that refuses to shrink (a long save path) would otherwise
+                                     make the card wider than the list and push its status badge and menu button out of sight. -->
                                 <Border x:Name="Bd" Background="{StaticResource CardBrush}"
                                         BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
-                                        CornerRadius="12" Padding="18,16">
+                                        CornerRadius="12" Padding="18,16"
+                                        Width="{Binding ViewportWidth, RelativeSource={RelativeSource AncestorType={x:Type ScrollViewer}}}">
                                     <ContentPresenter />
                                 </Border>
                                 <ControlTemplate.Triggers>

@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     public MainWindow(MainViewModel viewModel, TrayIconService tray)
     {
         InitializeComponent();
+        FitToWorkArea();
         _vm = viewModel;
         _tray = tray;
         DataContext = viewModel;
@@ -46,9 +47,38 @@ public partial class MainWindow : Window
         var wakeupTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         wakeupTimer.Tick += (_, _) => viewModel.CheckWakeupFile();
         wakeupTimer.Start();
+        // "Last backup: 5 min ago" would otherwise stay frozen until the next refresh.
+        var clockTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+        clockTimer.Tick += (_, _) => viewModel.RefreshTimes();
+        clockTimer.Start();
     }
 
     public MainViewModel ViewModel => _vm;
+
+    /// <summary>
+    /// The window is designed larger than a 1366x768 screen, or a 1080p one at 150% scaling, can show; it
+    /// is shrunk to what the screen offers (and may be made smaller still) instead of starting cut off.
+    /// </summary>
+    private void FitToWorkArea()
+    {
+        const double margin = 16;
+        var area = SystemParameters.WorkArea;
+        Width = Math.Min(Width, Math.Max(MinWidth, area.Width - margin));
+        Height = Math.Min(Height, Math.Max(MinHeight, area.Height - margin));
+        MinWidth = Math.Min(MinWidth, Width);
+        MinHeight = Math.Min(MinHeight, Height);
+    }
+
+    // Four overview cards in a row need about 800 DIPs; below that they go two by two.
+    private void OnOverviewSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        OverviewCards.Columns = e.NewSize.Width >= 800 ? 4 : 2;
+    }
+
+    private void OnOpenLogFolder(object sender, RoutedEventArgs e)
+    {
+        FileUtil.TryOpenInExplorer(_vm.LogFolder);
+    }
 
     private void OnNavigateOverview(object sender, RoutedEventArgs e)
     {
@@ -198,7 +228,7 @@ public partial class MainWindow : Window
         _vm.RestartMonitoringIfActive();
         _vm.AppendLog(Localization.T("Msg.AddedGameLog", game.Name, string.Join(", ", game.BackupMethods)));
         if (_vm.Monitoring.IsMonitoring && Directory.Exists(game.Save) && Directory.EnumerateFileSystemEntries(game.Save).Any())
-            _ = Task.Run(() => _vm.BackupService.PerformBackupAsync(game, _vm.Config, _vm.WebDavPassword, _vm.AppendLog));
+            _ = _vm.BackupNewGameAsync(game);
         _ = _vm.RefreshGamesAsync();
     }
 
@@ -246,7 +276,11 @@ public partial class MainWindow : Window
         }
         try
         {
-            await _vm.ForceBackupAsync();
+            var failures = await _vm.ForceBackupAsync();
+            // Failures used to land in the log only, so an upload that did nothing looked like one that worked.
+            if (failures.Count > 0)
+                MessageBox.Show(this, Localization.T("Msg.UploadSomeFailed", string.Join("\n", failures)),
+                    Localization.T("Common.Warning"), MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -811,6 +845,11 @@ public partial class MainWindow : Window
                     _vm.AppendLog(Localization.T("Log.GameSkippedInvalid", ig.Name, GameNames.Describe(nameError, ig.Name)));
                     continue;
                 }
+                if (_vm.SavePathProblem(ig) is { } pathProblem)
+                {
+                    _vm.AppendLog(Localization.T("Log.GameSkippedInvalid", ig.Name, pathProblem));
+                    continue;
+                }
                 var fixedSave = FileUtil.FixSavePath(ig.Save);
                 if (fixedSave != ig.Save)
                     fixedPaths++;
@@ -883,7 +922,8 @@ public partial class MainWindow : Window
         }
         var localNames = _vm.Config.Games.Select(g => g.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var newGames = games.Where(g => !localNames.Contains(g.Name)
-            && GameNames.Validate(g.Name, Array.Empty<GameConfig>()) == GameNameError.None).ToList();
+            && GameNames.Validate(g.Name, Array.Empty<GameConfig>()) == GameNameError.None
+            && _vm.SavePathProblem(g) is null).ToList();
         if (newGames.Count == 0)
         {
             MessageBox.Show(this, Localization.T("CfgRestore.NoNew", source, games.Count), Localization.T("Common.Info"),

@@ -19,7 +19,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Shell.Library"] = "游戏库",
         ["Shell.LibraryHint"] = "管理存档目录、手动同步与历史版本。",
         ["Shell.Activity"] = "活动日志",
-        ["Shell.ActivityHint"] = "本次运行的最近 400 条记录；历史备份可在游戏库中查看。",
+        ["Shell.ActivityHint"] = "这里显示最近 400 条记录，完整日志保存在日志文件夹里；历史备份可在游戏库中查看。",
         ["Shell.Engine"] = "监控引擎",
         ["Shell.Watching"] = "运行中",
         ["Shell.Idle"] = "未启动",
@@ -38,7 +38,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Shell.Preview"] = "游戏速览",
         ["Shell.ViewAll"] = "全部游戏",
         ["Shell.NoActivity"] = "还没有活动记录",
-        ["Shell.SessionOnly"] = "仅显示本次运行记录",
+        ["Shell.SessionOnly"] = "完整日志保存在日志文件夹中（约保留最近 2 MB）",
         ["Shell.BackupGuide"] = "选中游戏后，可查看、下载或恢复历史备份。",
         ["Shell.OpenLibrary"] = "前往游戏库",
         ["Shell.History"] = "历史版本",
@@ -403,6 +403,61 @@ public sealed class Localization : INotifyPropertyChanged
         ["Tray.Quit"] = "完全退出",
         ["Tray.TooltipMonitoring"] = "云存档管家 (监控中 {0} 个)",
         ["Tray.TooltipIdle"] = "云存档管家 (未监控)",
+        ["Tray.TooltipProblems"] = "云存档管家 ({0} 个游戏需要处理)",
+
+        ["Notify.BackupFailedTitle"] = "云存档备份失败",
+        ["Notify.BackupFailedBody"] = "「{0}」{1}",
+
+        ["Card.LastBackup"] = "上次备份：{0}",
+        ["Card.BackupFailed"] = "上次备份失败：{0}",
+        ["Time.JustNow"] = "刚刚",
+        ["Time.MinutesAgo"] = "{0} 分钟前",
+        ["Time.HoursAgo"] = "{0} 小时前",
+        ["Time.DaysAgo"] = "{0} 天前",
+
+        ["Shell.ProblemTitle"] = "{0} 个游戏需要处理",
+        ["Btn.OpenLogFolder"] = "打开日志文件夹",
+
+        ["Status.PathInvalid"] = "⛔ 存档路径无效",
+        ["Status.OneDriveMissing"] = "⛔ OneDrive 目录不存在",
+        ["Status.WebDavUrlInvalid"] = "⛔ WebDAV 地址无效",
+        ["Status.WebDavAuth"] = "⛔ WebDAV 认证失败",
+        ["Status.WebDavNotFound"] = "⛔ WebDAV 路径不存在",
+        ["Status.WebDavUnreachable"] = "⛔ WebDAV 无法连接",
+        ["Status.WebDavError"] = "⛔ WebDAV 异常 (HTTP {0})",
+
+        ["Err.WebDavAuth"] = "认证失败（HTTP {0}）：请检查用户名和密码（部分服务要求使用应用专用密码）",
+        ["Err.WebDavNotFound"] = "路径不存在（HTTP 404）：请检查服务器地址里的路径部分",
+        ["Err.WebDavBusy"] = "服务器暂时无法处理请求（HTTP {0}）",
+        ["Err.WebDavHttp"] = "服务器返回 HTTP {0}",
+        ["Err.WebDavUnreachable"] = "无法连接服务器：{0}",
+        ["Err.WebDavTimeout"] = "服务器响应超时",
+        ["Err.WebDavMkcol"] = "无法在云端创建文件夹 {0}：{1}",
+        ["Err.WebDavUpload"] = "上传 {0} 失败：{1}",
+        ["Err.WebDavDownload"] = "下载 {0} 失败：{1}",
+        ["Err.SaveDirMissing"] = "存档目录不存在：{0}",
+        ["Err.OneDriveRootMissing"] = "OneDrive 目录不存在：{0}（被移动、改名或未挂载？请在设置中重新选择）",
+
+        ["Url.Empty"] = "WebDAV 地址为空。",
+        ["Url.Unsupported"] = "WebDAV 地址必须以 http:// 或 https:// 开头。",
+        ["Url.Malformed"] = "WebDAV 地址格式不正确：{0}",
+        ["Url.Query"] = "WebDAV 地址不能带 ? 或 # 之后的内容。",
+
+        ["SavePath.Empty"] = "请填写本地存档路径。",
+        ["SavePath.Invalid"] = "存档路径含有无效字符，或格式不正确。",
+        ["SavePath.NotAbsolute"] = "存档路径必须是完整路径（例如 D:\\Games\\XXX\\Saves），不能是相对路径。",
+        ["SavePath.DriveRoot"] = "不能把整个磁盘当作存档目录，请选择游戏存放存档的具体文件夹。",
+        ["SavePath.TooBroad"] = "这个文件夹范围太大（它是用户目录、文档、AppData、Program Files 等系统文件夹，或包含这些文件夹）。备份和恢复都是对整个文件夹操作，请选择游戏存放存档的具体子文件夹。",
+        ["SavePath.ContainsBackups"] = "存档目录不能是 OneDrive 备份目录本身或它的上级：备份会写进存档目录，反复触发新的备份。请选择具体的存档文件夹，或更换 OneDrive 目录。",
+
+        ["Log.WebDavRetry"] = "⚡ WebDAV {0} {1} 失败（{2}），第 {3}/{4} 次尝试后重试",
+        ["Log.WebDavProbeFail"] = "☆ WebDAV 无法使用 ({0})：{1}",
+
+        ["Msg.UploadSomeFailed"] = "以下游戏备份失败：\n{0}",
+
+        ["Set.TestFailDetail"] = "✗ 连接失败：{0}",
+        ["Set.CloudRootMissing"] = "OneDrive 目录「{0}」不存在，备份会一直失败，直到这个目录出现。仍要保存吗？",
+        ["Set.CloudRootConflict"] = "以下游戏的存档目录与这个 OneDrive 目录冲突：\n{0}\n请先修改这些游戏的存档目录，或选择别的 OneDrive 目录。",
     };
 
     private static readonly Dictionary<string, string> En = new()
@@ -412,7 +467,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Shell.Library"] = "Game library",
         ["Shell.LibraryHint"] = "Manage save folders, sync your games and browse backup versions.",
         ["Shell.Activity"] = "Activity log",
-        ["Shell.ActivityHint"] = "The latest 400 entries from this session. Find backup versions in the game library.",
+        ["Shell.ActivityHint"] = "The latest 400 entries are shown here; the full log is kept in the log folder. Find backup versions in the game library.",
         ["Shell.Engine"] = "Monitoring engine",
         ["Shell.Watching"] = "Running",
         ["Shell.Idle"] = "Stopped",
@@ -431,7 +486,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Shell.Preview"] = "Your games at a glance",
         ["Shell.ViewAll"] = "All games",
         ["Shell.NoActivity"] = "No activity yet",
-        ["Shell.SessionOnly"] = "Current session only",
+        ["Shell.SessionOnly"] = "The full log is kept in the log folder (about the last 2 MB)",
         ["Shell.BackupGuide"] = "Select a game to browse, download or restore its backup versions.",
         ["Shell.OpenLibrary"] = "Open game library",
         ["Shell.History"] = "Backup history",
@@ -782,6 +837,61 @@ public sealed class Localization : INotifyPropertyChanged
         ["Tray.Quit"] = "Quit",
         ["Tray.TooltipMonitoring"] = "GameCloudSync (monitoring {0} games)",
         ["Tray.TooltipIdle"] = "GameCloudSync (not monitoring)",
+        ["Tray.TooltipProblems"] = "GameCloudSync ({0} games need attention)",
+
+        ["Notify.BackupFailedTitle"] = "Save backup failed",
+        ["Notify.BackupFailedBody"] = "“{0}”: {1}",
+
+        ["Card.LastBackup"] = "Last backup: {0}",
+        ["Card.BackupFailed"] = "Last backup failed: {0}",
+        ["Time.JustNow"] = "just now",
+        ["Time.MinutesAgo"] = "{0} min ago",
+        ["Time.HoursAgo"] = "{0} h ago",
+        ["Time.DaysAgo"] = "{0} d ago",
+
+        ["Shell.ProblemTitle"] = "{0} game(s) need attention",
+        ["Btn.OpenLogFolder"] = "Open log folder",
+
+        ["Status.PathInvalid"] = "⛔ Invalid save path",
+        ["Status.OneDriveMissing"] = "⛔ OneDrive folder missing",
+        ["Status.WebDavUrlInvalid"] = "⛔ Invalid WebDAV address",
+        ["Status.WebDavAuth"] = "⛔ WebDAV login failed",
+        ["Status.WebDavNotFound"] = "⛔ WebDAV path not found",
+        ["Status.WebDavUnreachable"] = "⛔ WebDAV unreachable",
+        ["Status.WebDavError"] = "⛔ WebDAV error (HTTP {0})",
+
+        ["Err.WebDavAuth"] = "Login failed (HTTP {0}): check the username and password (some services require an app-specific password)",
+        ["Err.WebDavNotFound"] = "Path not found (HTTP 404): check the path part of the server address",
+        ["Err.WebDavBusy"] = "The server can't handle the request right now (HTTP {0})",
+        ["Err.WebDavHttp"] = "The server returned HTTP {0}",
+        ["Err.WebDavUnreachable"] = "Can't reach the server: {0}",
+        ["Err.WebDavTimeout"] = "The server didn't respond in time",
+        ["Err.WebDavMkcol"] = "Couldn't create the remote folder {0}: {1}",
+        ["Err.WebDavUpload"] = "Uploading {0} failed: {1}",
+        ["Err.WebDavDownload"] = "Downloading {0} failed: {1}",
+        ["Err.SaveDirMissing"] = "The save folder doesn't exist: {0}",
+        ["Err.OneDriveRootMissing"] = "The OneDrive folder doesn't exist: {0} (moved, renamed or not mounted? Pick it again in Settings)",
+
+        ["Url.Empty"] = "The WebDAV address is empty.",
+        ["Url.Unsupported"] = "The WebDAV address must start with http:// or https://.",
+        ["Url.Malformed"] = "The WebDAV address is not valid: {0}",
+        ["Url.Query"] = "The WebDAV address can't contain anything after ? or #.",
+
+        ["SavePath.Empty"] = "Please enter the local save path.",
+        ["SavePath.Invalid"] = "The save path contains invalid characters or is malformed.",
+        ["SavePath.NotAbsolute"] = "The save path must be a full path (for example D:\\Games\\XXX\\Saves), not a relative one.",
+        ["SavePath.DriveRoot"] = "A whole drive can't be a save folder. Pick the specific folder where the game keeps its saves.",
+        ["SavePath.TooBroad"] = "This folder is far too broad (it is, or contains, a system folder such as your user profile, Documents, AppData or Program Files). Backup and restore work on the whole folder, so pick the specific subfolder where the game keeps its saves.",
+        ["SavePath.ContainsBackups"] = "The save folder can't be the OneDrive backup folder or one of its parents: backups would be written into the save folder and keep triggering new backups. Pick the specific save folder, or change the OneDrive folder.",
+
+        ["Log.WebDavRetry"] = "⚡ WebDAV {0} {1} failed ({2}); retrying after attempt {3}/{4}",
+        ["Log.WebDavProbeFail"] = "☆ WebDAV can't be used ({0}): {1}",
+
+        ["Msg.UploadSomeFailed"] = "These games could not be backed up:\n{0}",
+
+        ["Set.TestFailDetail"] = "✗ Connection failed: {0}",
+        ["Set.CloudRootMissing"] = "The OneDrive folder “{0}” doesn't exist, so backups will keep failing until it appears. Save anyway?",
+        ["Set.CloudRootConflict"] = "The save folders of these games conflict with this OneDrive folder:\n{0}\nChange those save folders first, or pick a different OneDrive folder.",
     };
 
     private string _language = Chinese;

@@ -61,12 +61,17 @@
                             <TextBlock Grid.Column="2" Margin="12,0,8,0" Text="{Binding [Set.Password], Source={x:Static loc:Localization.Instance}}" VerticalAlignment="Center" />
                             <PasswordBox x:Name="PassBox" Grid.Column="3" />
                         </Grid>
-                        <StackPanel Orientation="Horizontal" Margin="104,0,0,0">
+                        <!-- The result can be a whole sentence (login refused, path not found...), so it wraps beside the button. -->
+                        <Grid Margin="104,0,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
                             <Button x:Name="TestButton" Content="{Binding [Btn.TestWebDav], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}"
-                                    Click="OnTestWebDav" />
-                            <TextBlock x:Name="TestResult" Margin="12,0,0,0" VerticalAlignment="Center"
+                                    Click="OnTestWebDav" VerticalAlignment="Top" />
+                            <TextBlock x:Name="TestResult" Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
                                        FontSize="12" Foreground="{StaticResource TextSecBrush}" />
-                        </StackPanel>
+                        </Grid>
                     </StackPanel>
                 </Border>
 

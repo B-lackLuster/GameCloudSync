@@ -13,6 +13,7 @@ public sealed class DashboardViewModel : ObservableObject
     private readonly MainViewModel _owner;
     private readonly HashSet<GameItemViewModel> _observedGames = new();
     private WorkspacePage _page;
+    private int _knownProblemCount;
 
     public DashboardViewModel(MainViewModel owner)
     {
@@ -61,6 +62,21 @@ public sealed class DashboardViewModel : ObservableObject
     public int UncheckedCount => _owner.Games.Count(g => g.Status.Kind is SyncStatusKind.Unknown or SyncStatusKind.None);
     public int LogCount => _owner.Logs.Count;
     public bool HasLogs => LogCount > 0;
+
+    /// <summary>Games that can't be backed up as configured, or whose latest backup failed.</summary>
+    public int ProblemCount => _owner.Games.Count(g => g.HasProblem);
+    public bool HasProblems => ProblemCount > 0;
+    public string ProblemTitle => Localization.T("Shell.ProblemTitle", ProblemCount);
+
+    /// <summary>The first few problems in one line each, so the cause is visible without opening the library.</summary>
+    public IEnumerable<string> ProblemLines => _owner.Games
+        .Where(g => g.HasProblem)
+        .OrderByDescending(g => g.HasFailure)
+        .Take(3)
+        .Select(g => $"{g.Name}: {(g.HasFailure ? g.LastFailure : g.Status.Detail ?? g.Status.Text)}");
+
+    /// <summary>Raised when the number of problem games changes (the tray icon follows it).</summary>
+    public event Action? ProblemCountChanged;
     public bool IsOneDriveConfigured => !string.IsNullOrWhiteSpace(_owner.Config.CloudRoot);
     public bool IsWebDavConfigured => !string.IsNullOrWhiteSpace(_owner.Config.WebDavUrl);
     public string OneDriveState => Localization.T(IsOneDriveConfigured ? "Shell.Configured" : "Common.NotConfigured");
@@ -92,9 +108,18 @@ public sealed class DashboardViewModel : ObservableObject
 
     private void OnGameChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(GameItemViewModel.Status) or nameof(GameItemViewModel.IsPaused))
+        if (e.PropertyName is nameof(GameItemViewModel.Status) or nameof(GameItemViewModel.IsPaused)
+            or nameof(GameItemViewModel.LastFailure))
             Refresh();
     }
 
-    private void Refresh() => OnPropertyChanged(string.Empty);
+    private void Refresh()
+    {
+        OnPropertyChanged(string.Empty);
+        var problems = ProblemCount;
+        if (problems == _knownProblemCount)
+            return;
+        _knownProblemCount = problems;
+        ProblemCountChanged?.Invoke();
+    }
 }

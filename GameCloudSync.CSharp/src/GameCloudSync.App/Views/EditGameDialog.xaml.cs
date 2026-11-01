@@ -13,12 +13,14 @@ public partial class EditGameDialog : Window
 {
     private readonly GameConfig _game;
     private readonly IReadOnlyList<GameConfig> _games;
+    private readonly AppConfig _config;
 
     public EditGameDialog(MainViewModel vm, GameConfig game)
     {
         InitializeComponent();
         _game = game;
         _games = vm.Config.Games;
+        _config = vm.Config;
         NameBox.Text = game.Name;
         SaveBox.Text = game.Save;
         MaxBox.Text = game.MaxBackups.ToString();
@@ -50,6 +52,16 @@ public partial class EditGameDialog : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             NameBox.Focus();
             NameBox.SelectAll();
+            return;
+        }
+        // Backups and restores act on the whole folder, so it has to be a game's own save folder.
+        var pathError = SavePathPolicy.Validate(save, name, OneDriveCheck.IsChecked == true ? _config.CloudRoot : "");
+        if (pathError != SavePathError.None)
+        {
+            MessageBox.Show(this, SavePathPolicy.Describe(pathError), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            SaveBox.Focus();
+            SaveBox.SelectAll();
             return;
         }
         var methods = new List<string>();

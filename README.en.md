@@ -10,7 +10,10 @@ A Windows desktop app (C# / WPF, .NET 9) that monitors game save folders and bac
 - Safe restores: the local save is snapshotted before it is overwritten (latest 5 kept) and can be restored at any time; a backup only appears once fully written, so a failed or interrupted backup is never taken for the newest one
 - Cloud config sync: config is backed up to the cloud, new games are detected on startup and merged with one click
 - Batch operations: upload, overwrite-download, delete, export/import configs
-- System integration: tray icon, auto-start with Windows, single-instance wake-up
+- System integration: tray icon, auto-start with Windows (straight to the tray), single-instance wake-up
+- Failures stay visible: a failed backup raises a Windows notification, turns the tray icon red and is explained on the dashboard and the game card (login refused, path missing, WebDAV unreachable…); failed backups are retried automatically, and so are WebDAV requests that hit a network hiccup
+- Run log: the full log is written to the `logs` folder next to the exe (about the last 2 MB), one click away on the Activity page
+- Input checks: save folders that are far too broad (a whole drive, the user profile, Documents) are refused, and the WebDAV address is checked before settings are saved
 - Secure storage: WebDAV password encrypted with DPAPI, never written to config
 - Bilingual UI: switch between Chinese and English anytime in Settings
 

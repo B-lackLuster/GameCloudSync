@@ -8,25 +8,42 @@ namespace GameCloudSync.Core.Services;
 /// Watches game save folders with FileSystemWatcher and backs a game up once its folder has
 /// been quiet for a moment (never later than a maximum delay). Backups run one at a time on a
 /// background worker; a change that arrives while another backup is running is queued and
-/// backed up afterwards, never dropped.
+/// backed up afterwards, never dropped. A backup that fails is repeated after a growing pause.
 /// </summary>
 public sealed class MonitoringService : IDisposable
 {
+    // Pauses before each repeat of a failed backup; once they are used up the next save change tries again.
+    private static readonly TimeSpan[] DefaultRetryDelays =
+    [
+        TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(10),
+        TimeSpan.FromMinutes(30), TimeSpan.FromHours(1)
+    ];
+
     private readonly BackupService _backupService;
     private readonly Func<AppConfig> _getConfig;
     private readonly Func<string> _getPassword;
     private readonly Action<string> _log;
     private readonly TimeSpan _quietPeriod;
     private readonly TimeSpan _maxDelay;
+    private readonly IReadOnlyList<TimeSpan> _retryDelays;
     private readonly object _lock = new();
     private readonly List<GameWatcher> _watchers = new();
     private readonly HashSet<GameWatcher> _queued = new();
-    // Kept across Stop/Start, keyed by save folder (which survives a rename), so a restart
-    // neither re-uploads unchanged saves nor forgets pending changes.
-    private readonly Dictionary<string, string> _backedUpFingerprints = new(StringComparer.OrdinalIgnoreCase);
+    // Kept across Stop/Start, keyed by save folder (which survives a rename) and target, so a restart
+    // neither re-uploads unchanged saves nor forgets pending changes, and a target that already holds
+    // a save isn't sent it again just because another target failed.
+    private readonly Dictionary<(string Save, string Target), string> _backedUp = new();
     private readonly HashSet<string> _pendingSaves = new(StringComparer.OrdinalIgnoreCase);
+    // Games whose latest backup failed, by save folder. Cleared by the next fully successful backup.
+    private readonly Dictionary<string, RetryState> _failing = new(StringComparer.OrdinalIgnoreCase);
     private readonly Channel<GameWatcher> _channel;
     private readonly CancellationTokenSource _cts = new();
+
+    private sealed class RetryState
+    {
+        public int Failures;
+        public Timer? Timer;
+    }
 
     public MonitoringService(
         BackupService backupService,
@@ -34,7 +51,8 @@ public sealed class MonitoringService : IDisposable
         Func<string> getPassword,
         Action<string> log,
         TimeSpan? quietPeriod = null,
-        TimeSpan? maxDelay = null)
+        TimeSpan? maxDelay = null,
+        IReadOnlyList<TimeSpan>? retryDelays = null)
     {
         _backupService = backupService;
         _getConfig = getConfig;
@@ -42,6 +60,7 @@ public sealed class MonitoringService : IDisposable
         _log = log;
         _quietPeriod = quietPeriod ?? TimeSpan.FromSeconds(Constants.BackupQuietSeconds);
         _maxDelay = maxDelay ?? TimeSpan.FromSeconds(Constants.BackupMaxDelaySeconds);
+        _retryDelays = retryDelays ?? DefaultRetryDelays;
         _channel = Channel.CreateUnbounded<GameWatcher>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -52,6 +71,9 @@ public sealed class MonitoringService : IDisposable
 
     public event Action? StateChanged;
     public event Action? BackupFinished;
+
+    /// <summary>Raised after every automatic backup run with its outcome, successful or not.</summary>
+    public event Action<BackupAttempt>? BackupAttempted;
 
     public bool IsMonitoring
     {
@@ -86,6 +108,14 @@ public sealed class MonitoringService : IDisposable
 
             foreach (var game in games)
             {
+                // Watching (and later backing up or restoring) a folder far bigger than a save would be harmful.
+                var pathError = SavePathPolicy.Validate(game.Save, game.Name,
+                    game.HasMethod(Constants.MethodOneDrive) ? config.CloudRoot : "");
+                if (pathError != SavePathError.None)
+                {
+                    _log(Localization.T("Log.MonitorGameFail", game.Name, SavePathPolicy.Describe(pathError)));
+                    continue;
+                }
                 if (!Directory.Exists(game.Save))
                 {
                     try
@@ -140,6 +170,15 @@ public sealed class MonitoringService : IDisposable
         {
             foreach (var watcher in watchers.Where(w => w.PendingAtDispose))
                 _pendingSaves.Add(SaveKey(watcher.Game));
+            // Waiting retries end with the watchers; starting again tries these games again, with a fresh
+            // allowance, which is what a user who just fixed the cause (a password, a folder) wants.
+            foreach (var (key, state) in _failing)
+            {
+                state.Timer?.Dispose();
+                state.Timer = null;
+                state.Failures = 0;
+                _pendingSaves.Add(key);
+            }
         }
         RaiseStateChanged();
         _log(Localization.T("Log.MonitorStopped"));
@@ -213,20 +252,79 @@ public sealed class MonitoringService : IDisposable
     {
         if (!FileUtil.HasAnyFile(game.Save))
             return false;
+        var config = _getConfig();
+        var key = SaveKey(game);
         var fingerprint = FileUtil.Fingerprint(game.Save);
+        List<string> pending;
         lock (_lock)
         {
-            // Nothing new since the last backup (e.g. a save rewritten with identical files).
-            if (_backedUpFingerprints.TryGetValue(SaveKey(game), out var last) && last == fingerprint)
-                return false;
+            // A target that already holds exactly this content has nothing new to receive
+            // (e.g. a save rewritten with identical files).
+            pending = BackupService.TargetsFor(game, config)
+                .Where(target => !_backedUp.TryGetValue((key, target), out var last) || last != fingerprint)
+                .ToList();
         }
-        var result = await _backupService.PerformBackupAsync(game, _getConfig(), _getPassword(), _log, _cts.Token);
-        if (result.Count > 0)
+        if (pending.Count == 0)
         {
-            lock (_lock)
-                _backedUpFingerprints[SaveKey(game)] = fingerprint;
+            ForgetFailure(key);
+            return false;
         }
+        var result = await _backupService.RunBackupAsync(game, config, _getPassword(), _log, pending, _cts.Token);
+        lock (_lock)
+        {
+            foreach (var target in result.Succeeded)
+                _backedUp[(key, target)] = fingerprint;
+        }
+        RaiseBackupAttempted(RecordOutcome(game, key, result));
         return true;
+    }
+
+    /// <summary>Notes how a backup run went and, after a failure, schedules the next try.</summary>
+    private BackupAttempt RecordOutcome(GameConfig game, string key, BackupResult result)
+    {
+        lock (_lock)
+        {
+            if (!result.HasFailures)
+            {
+                ForgetFailure(key);
+                return new BackupAttempt(game, result, IsNewFailure: false, RetryIn: null);
+            }
+            var isNew = !_failing.TryGetValue(key, out var state);
+            state ??= _failing[key] = new RetryState();
+            state.Failures++;
+            state.Timer?.Dispose();
+            state.Timer = null;
+            TimeSpan? retryIn = state.Failures <= _retryDelays.Count ? _retryDelays[state.Failures - 1] : null;
+            if (retryIn is { } delay && !_cts.IsCancellationRequested)
+                state.Timer = new Timer(_ => OnRetryDue(key), null, delay, Timeout.InfiniteTimeSpan);
+            return new BackupAttempt(game, result, isNew, retryIn);
+        }
+    }
+
+    private void ForgetFailure(string key)
+    {
+        lock (_lock)
+        {
+            if (_failing.Remove(key, out var state))
+                state.Timer?.Dispose();
+        }
+    }
+
+    private void OnRetryDue(string key)
+    {
+        GameWatcher? live;
+        lock (_lock)
+        {
+            if (_cts.IsCancellationRequested || !_failing.TryGetValue(key, out var state))
+                return;
+            state.Timer?.Dispose();
+            state.Timer = null;
+            live = _watchers.FirstOrDefault(w => SaveKey(w.Game) == key);
+            if (live is null)
+                _pendingSaves.Add(key);
+        }
+        if (live is not null)
+            Enqueue(live);
     }
 
     private static string SaveKey(GameConfig game) =>
@@ -235,6 +333,23 @@ public sealed class MonitoringService : IDisposable
     private void RaiseStateChanged() => RaiseSafely(StateChanged);
 
     private void RaiseBackupFinished() => RaiseSafely(BackupFinished);
+
+    private void RaiseBackupAttempted(BackupAttempt attempt)
+    {
+        if (BackupAttempted is not { } handlers)
+            return;
+        foreach (var handler in handlers.GetInvocationList().Cast<Action<BackupAttempt>>())
+        {
+            try
+            {
+                handler(attempt);
+            }
+            catch (Exception ex)
+            {
+                _log(Localization.T("Log.TaskError", ex.Message));
+            }
+        }
+    }
 
     private void RaiseSafely(Action? handlers)
     {

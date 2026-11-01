@@ -7,6 +7,7 @@ using GameCloudSync.App.Services;
 using GameCloudSync.App.ViewModels;
 using GameCloudSync.App.Views;
 using GameCloudSync.Core.Services;
+using GameCloudSync.Core.Util;
 using Localization = GameCloudSync.Core.Services.Localization;
 
 namespace GameCloudSync.App;
@@ -18,6 +19,7 @@ public partial class App : Application
     private TrayIconService? _tray;
     private MainWindow? _mainWindow;
     private MonitoringService? _monitoring;
+    private FileLog? _fileLog;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -53,6 +55,13 @@ public partial class App : Application
             return;
         }
 
+        // Only the instance that keeps running writes the log and looks after the autostart entry.
+        var startMinimized = AutostartCommand.StartsMinimized(e.Args);
+        _fileLog = new FileLog(Path.Combine(appDir, Constants.LogDirName, Constants.LogFileName));
+        _fileLog.Write($"GameCloudSync started ({(startMinimized ? "minimized to the tray" : "main window")})");
+        if (Environment.ProcessPath is { } exePath)
+            AutoStartService.UpgradeLegacyEntry(exePath);
+
         // Services
         var configStore = new ConfigStore(appDir);
         try
@@ -62,6 +71,7 @@ public partial class App : Application
         catch (Exception ex)
         {
             // Carrying on with an empty config would overwrite the real one on the next save.
+            _fileLog.Write($"Config could not be read: {ex.Message}");
             MessageBox.Show(Localization.T("Cfg.ReadFailed", configStore.ConfigPath, ex.Message), "GameCloudSync",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown();
@@ -71,6 +81,12 @@ public partial class App : Application
         MigrateLegacyPassword(appDir, configStore, secretStore);
 
         var ui = SynchronizationContext.Current!;
+        // Background work logs from any thread: the file gets the line at once, the activity list on the UI thread.
+        void Log(string message)
+        {
+            _fileLog?.Write(message);
+            ui.Post(_ => _mainWindow?.ViewModel.ShowLog(message), null);
+        }
         var backupService = new BackupService((url, password) =>
         {
             var cfg = configStore.Load();
@@ -91,10 +107,10 @@ public partial class App : Application
             backupService,
             () => configStore.Load(),
             () => secretStore.LoadPassword() ?? "",
-            m => ui.Post(_ => _mainWindow?.ViewModel.AppendLog(m), null));
+            Log);
 
         var viewModel = new MainViewModel(
-            configStore, secretStore, backupService, cloudConfigService, _monitoring, ui);
+            configStore, secretStore, backupService, cloudConfigService, _monitoring, ui, _fileLog);
 
         // Tray
         _tray = new TrayIconService();
@@ -112,13 +128,18 @@ public partial class App : Application
         _tray.QuitRequested += () => ShutdownApp();
 
         viewModel.ShowWindowRequested += () => ShowMainWindow();
+        // A backup that fails in the background is otherwise invisible while the window is hidden in the tray.
+        viewModel.FailureNotice += (title, message) => _tray?.ShowNotification(title, message, isError: true);
+        viewModel.Dashboard.ProblemCountChanged += UpdateTray;
         // Monitoring can be restarted from background threads (startup auto sync); the tray icon is UI.
         _monitoring.StateChanged += () => Dispatcher.InvokeAsync(UpdateTray);
 
         _mainWindow = new MainWindow(viewModel, _tray);
         MainWindow = _mainWindow;
         _mainWindow.Closed += (_, _) => ShutdownApp();
-        _mainWindow.Show();
+        // A login start goes straight to the tray: nothing pops up until the user opens the window.
+        if (!startMinimized)
+            _mainWindow.Show();
 
         viewModel.Load();
         if (configStore.CorruptConfigPath is { } corruptPath)
@@ -126,6 +147,9 @@ public partial class App : Application
             var notice = Localization.T(configStore.RecoveredFromBackup ? "Cfg.RecoveredFromBak" : "Cfg.CorruptReset",
                 corruptPath);
             viewModel.AppendLog(notice);
+            // This one the user has to see, even after a minimized start.
+            if (startMinimized)
+                ShowMainWindow();
             MessageBox.Show(_mainWindow, notice, Localization.T("Common.Warning"),
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
@@ -150,7 +174,8 @@ public partial class App : Application
     {
         if (_tray is null || _monitoring is null)
             return;
-        _tray.SetMonitoring(_monitoring.IsMonitoring, _monitoring.MonitoredCount);
+        _tray.SetState(_monitoring.IsMonitoring, _monitoring.MonitoredCount,
+            _mainWindow?.ViewModel.Dashboard.ProblemCount ?? 0);
     }
 
     private void ShutdownApp()
@@ -176,6 +201,8 @@ public partial class App : Application
         }
         _mainWindow?.ForceClose();
         _singleInstance?.Dispose();
+        _fileLog?.Write("GameCloudSync exited");
+        _fileLog?.Dispose();
         Shutdown();
     }
 
@@ -214,6 +241,7 @@ public partial class App : Application
     {
         if (ex is null)
             return;
+        _fileLog?.Write($"[{source}] unhandled exception: {ex}");
         try
         {
             var path = Path.Combine(AppContext.BaseDirectory, "crash.log");
