@@ -7,7 +7,9 @@
         xmlns:loc="clr-namespace:GameCloudSync.Core.Services;assembly=GameCloudSync.Core"
         Title="{Binding [Win.Title], Source={x:Static loc:Localization.Instance}}"
         Width="1280" Height="820" MinWidth="900" MinHeight="520"
-        WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterScreen" Icon="/Assets/icon.ico">
+        WindowStyle="SingleBorderWindow" ResizeMode="CanResize" WindowStartupLocation="CenterScreen" Icon="/Assets/icon.ico">
+    <!-- Windows only animates minimizing, maximizing and restoring a window that has a system title bar, so this one
+         keeps it (WindowStyle is not None); WindowChrome hands its place to the window's own title bar. -->
     <!-- A glass frame of zero makes WindowChrome clip the window to a plain rectangle, which stops Windows 11 from
          rounding its corners; one pixel (hidden under the opaque content) keeps the system frame, its rounding and shadow. -->
     <shell:WindowChrome.WindowChrome>
@@ -138,7 +140,7 @@
                 <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                 <Grid Margin="0,0,0,26">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                    <StackPanel Margin="0,0,18,0">
+                    <StackPanel x:Name="PageHeader" Margin="0,0,18,0">
                         <TextBlock Text="{Binding Dashboard.PageTitle}" FontSize="32" FontWeight="SemiBold" />
                         <TextBlock Text="{Binding Dashboard.PageSubtitle}" Foreground="{StaticResource TextSecBrush}" FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap" />
                     </StackPanel>
@@ -248,7 +250,7 @@
                             </Border>
                         </StackPanel>
                     </ScrollViewer>
-        <Grid Visibility="{Binding Dashboard.IsLibrary, Converter={x:Static vm:Converters.BoolToVisibility}}">
+        <Grid x:Name="LibraryPage" Visibility="{Binding Dashboard.IsLibrary, Converter={x:Static vm:Converters.BoolToVisibility}}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -357,7 +359,7 @@
                 </Border>
             </Grid>
         </Grid>
-                    <Border Style="{StaticResource DashboardCard}" Visibility="{Binding Dashboard.IsActivity, Converter={x:Static vm:Converters.BoolToVisibility}}">
+                    <Border x:Name="ActivityPage" Style="{StaticResource DashboardCard}" Visibility="{Binding Dashboard.IsActivity, Converter={x:Static vm:Converters.BoolToVisibility}}">
                         <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                             <StackPanel Margin="0,0,280,20"><TextBlock Text="{Binding [Main.LogTitle], Source={x:Static loc:Localization.Instance}}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{Binding [Shell.SessionOnly], Source={x:Static loc:Localization.Instance}}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap" /></StackPanel>
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">

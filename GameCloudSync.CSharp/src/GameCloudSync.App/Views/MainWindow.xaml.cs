@@ -40,6 +40,7 @@ public partial class MainWindow : Window
         _vm = viewModel;
         _tray = tray;
         DataContext = viewModel;
+        viewModel.Dashboard.PropertyChanged += OnDashboardChanged;
         viewModel.Logs.CollectionChanged += OnLogsChanged;
         viewModel.ResolveConflict = ResolveConflictAsync;
         Closing += OnWindowClosing;
@@ -97,6 +98,20 @@ public partial class MainWindow : Window
 
     private void OnOpenLibrary(object sender, RoutedEventArgs e) => _vm.Dashboard.Page = WorkspacePage.Library;
     private void OnOpenActivity(object sender, RoutedEventArgs e) => _vm.Dashboard.Page = WorkspacePage.Activity;
+
+    // Whichever way the page was switched (sidebar, links, a game's history), the new one comes in with its title.
+    private void OnDashboardChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(DashboardViewModel.Page))
+            return;
+        PageTransition.Play(PageHeader);
+        PageTransition.Play(_vm.Dashboard.Page switch
+        {
+            WorkspacePage.Library => LibraryPage,
+            WorkspacePage.Activity => ActivityPage,
+            _ => OverviewScroll
+        });
+    }
 
     private void OnPreviewHistory(object sender, RoutedEventArgs e)
     {
