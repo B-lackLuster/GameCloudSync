@@ -716,8 +716,9 @@ public partial class MainWindow : Window
 
         _vm.OnGameEdited(oldName, oldSave, item.Game);
         var renamed = oldName != item.Game.Name;
-        // No backup may land in either cloud folder while it is being renamed.
-        var pauseMonitoring = renamed && _vm.Monitoring.IsMonitoring;
+        // No backup may land in either cloud folder while it is being renamed (also not from monitoring that had
+        // nothing to watch, which a game added meanwhile would start).
+        var pauseMonitoring = renamed && _vm.Monitoring.IsActive;
         if (pauseMonitoring)
             _vm.Monitoring.Stop();
         try

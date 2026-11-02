@@ -269,13 +269,14 @@ public sealed class MainViewModel : ObservableObject
 
     public void AutoStart()
     {
+        // Also with no games yet: monitoring then starts watching the first game as soon as it is added.
+        if (!IsMonitoring)
+            _monitoring.Start();
         if (_config.Games.Count == 0)
         {
             AppendLog(Localization.T("Log.EmptyList"));
             return;
         }
-        if (!IsMonitoring)
-            _monitoring.Start();
         if (_config.AutoSyncOnStartup)
         {
             AppendLog(Localization.T("Log.CheckingSync"));
@@ -571,8 +572,9 @@ public sealed class MainViewModel : ObservableObject
     /// </summary>
     private async Task WithMonitoringPausedAsync(Func<Task> restore)
     {
-        var wasMonitoring = _monitoring.IsMonitoring;
-        if (wasMonitoring)
+        // Also when it has nothing to watch: a game added meanwhile would start it on the folder being replaced.
+        var wasActive = _monitoring.IsActive;
+        if (wasActive)
             _monitoring.Stop();
         try
         {
@@ -580,7 +582,7 @@ public sealed class MainViewModel : ObservableObject
         }
         finally
         {
-            if (wasMonitoring)
+            if (wasActive)
                 _monitoring.Start();
         }
     }

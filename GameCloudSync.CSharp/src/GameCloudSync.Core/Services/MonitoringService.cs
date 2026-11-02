@@ -38,6 +38,8 @@ public sealed class MonitoringService : IDisposable
     private readonly Dictionary<string, RetryState> _failing = new(StringComparer.OrdinalIgnoreCase);
     private readonly Channel<GameWatcher> _channel;
     private readonly CancellationTokenSource _cts = new();
+    // Set by Start even when there was nothing to watch, cleared by Stop.
+    private bool _active;
 
     private sealed class RetryState
     {
@@ -93,11 +95,25 @@ public sealed class MonitoringService : IDisposable
         }
     }
 
+    /// <summary>
+    /// True from <see cref="Start"/> until <see cref="Stop"/>, also while there is no game to watch (none added
+    /// yet, or all paused). <see cref="IsMonitoring"/> is only true once a game is watched.
+    /// </summary>
+    public bool IsActive
+    {
+        get
+        {
+            lock (_lock)
+                return _active;
+        }
+    }
+
     public bool Start()
     {
         int count;
         lock (_lock)
         {
+            _active = true;
             if (_watchers.Count > 0)
                 return true;
 
@@ -161,6 +177,7 @@ public sealed class MonitoringService : IDisposable
         List<GameWatcher> watchers;
         lock (_lock)
         {
+            _active = false;
             watchers = _watchers.ToList();
             _watchers.Clear();
         }
@@ -181,12 +198,18 @@ public sealed class MonitoringService : IDisposable
             }
         }
         RaiseStateChanged();
-        _log(Localization.T("Log.MonitorStopped"));
+        // Monitoring that was waiting for a game had nothing to stop.
+        if (watchers.Count > 0)
+            _log(Localization.T("Log.MonitorStopped"));
     }
 
+    /// <summary>
+    /// Picks up changed games or settings. Monitoring that had nothing to watch starts watching as soon as there is
+    /// a game, as it would when the app starts; monitoring that was stopped stays off.
+    /// </summary>
     public void RestartIfActive()
     {
-        if (!IsMonitoring)
+        if (!IsActive)
             return;
         Stop();
         Start();

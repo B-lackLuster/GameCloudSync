@@ -304,7 +304,7 @@ public sealed class Localization : INotifyPropertyChanged
 
         // ViewModel / logs
         ["Log.Welcome"] = "欢迎！共 {0} 个受监控游戏。",
-        ["Log.EmptyList"] = "💡 欢迎！列表为空，请先添加游戏或导入配置。",
+        ["Log.EmptyList"] = "💡 欢迎！列表为空，请先添加游戏或导入配置，之后会自动开始监控。",
         ["Log.CheckingSync"] = "🔄 正在检查各游戏存档同步状态...",
         ["Log.WebDavOk"] = "☆ WebDAV 连接成功: {0}",
         ["Log.WebDavFail"] = "☆ WebDAV 连接失败，请检查地址和账号密码: {0}",
@@ -781,7 +781,7 @@ public sealed class Localization : INotifyPropertyChanged
         ["Msg.SkipNoBackupLog"] = "⇩ ✗ {0}: no cloud backup found, skipped",
 
         ["Log.Welcome"] = "Welcome! {0} game(s) monitored.",
-        ["Log.EmptyList"] = "💡 Welcome! The list is empty. Add a game or import a config.",
+        ["Log.EmptyList"] = "💡 Welcome! The list is empty. Add a game or import a config, and monitoring starts by itself.",
         ["Log.CheckingSync"] = "🔄 Checking save sync status...",
         ["Log.WebDavOk"] = "☆ WebDAV connection OK: {0}",
         ["Log.WebDavFail"] = "☆ WebDAV connection failed. Check the URL and credentials: {0}",

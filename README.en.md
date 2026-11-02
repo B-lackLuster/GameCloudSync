@@ -33,7 +33,7 @@ Get `GameCloudSync.exe` from [Releases](https://github.com/B-lackLuster/GameClou
    - WebDAV: enter the server URL, username and password, then click "Test WebDAV Connection"
    - One of the two is enough
 2. **Add a game**: on the "Game library" page click "Add Game", enter the game's name, pick its local save folder and tick the backup methods (OneDrive / WebDAV)
-3. **Start monitoring**: after adding your first game, click "Start Monitoring" on the dashboard's "Monitoring engine" card (from then on it starts by itself whenever the app opens). Once it says "Running", every save the game writes reaches the cloud a few seconds later
+3. **Monitoring starts by itself**: once you add your first game, monitoring starts and the dashboard's "Monitoring engine" card shows "Running" (from then on it also starts whenever the app opens). After that, every save the game writes reaches the cloud a few seconds later
 
 You can close the window afterwards; the app keeps working in the tray.
 

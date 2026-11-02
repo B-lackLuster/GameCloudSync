@@ -126,4 +126,77 @@ public sealed class MonitoringServiceTests : IDisposable
         Assert.True(monitor.IsMonitoring);
         Assert.Equal(1, monitor.MonitoredCount);
     }
+
+    [Fact]
+    public async Task StartedWithNoGames_WatchesTheFirstGameAdded()
+    {
+        var config = Config(Constants.MethodOneDrive);
+        var game = config.Games.Single();
+        config.Games.Clear();
+        using var monitor = Monitor(new BackupService(), config);
+
+        // The app's first start: nothing to watch yet, but monitoring is on.
+        Assert.False(monitor.Start());
+        Assert.True(monitor.IsActive);
+        Assert.False(monitor.IsMonitoring);
+
+        // The user adds their first game.
+        config.Games.Add(game);
+        monitor.RestartIfActive();
+
+        Assert.Equal(1, monitor.MonitoredCount);
+        await File.WriteAllTextAsync(Path.Combine(_save, "slot.sav"), "progress");
+        await WaitUntilAsync(() => OneDriveBackupCount() == 1);
+    }
+
+    [Fact]
+    public void StoppedByUser_StaysOffWhenGamesAreAdded()
+    {
+        var config = Config(Constants.MethodOneDrive);
+        var game = config.Games.Single();
+        using var monitor = Monitor(new BackupService(), config);
+        Assert.True(monitor.Start());
+
+        // The user stops monitoring, deletes the game and adds it again.
+        monitor.Stop();
+        config.Games.Clear();
+        monitor.RestartIfActive();
+        config.Games.Add(game);
+        monitor.RestartIfActive();
+
+        Assert.False(monitor.IsActive);
+        Assert.False(monitor.IsMonitoring);
+    }
+
+    [Fact]
+    public void AllGamesPaused_ResumingOneStartsMonitoringAgain()
+    {
+        var config = Config(Constants.MethodOneDrive);
+        using var monitor = Monitor(new BackupService(), config);
+        Assert.True(monitor.Start());
+
+        config.Games[0].Paused = true;
+        monitor.RestartIfActive();
+        Assert.False(monitor.IsMonitoring);
+
+        config.Games[0].Paused = false;
+        monitor.RestartIfActive();
+        Assert.True(monitor.IsMonitoring);
+    }
+
+    [Fact]
+    public void NothingToWatch_IsNotReportedAsStopped()
+    {
+        var log = new List<string>();
+        var config = new AppConfig { CloudRoot = _cloud };
+        using var monitor = new MonitoringService(new BackupService(), () => config, () => "", log.Add);
+
+        // e.g. a restore pauses monitoring that is still waiting for its first game.
+        monitor.Start();
+        monitor.RestartIfActive();
+        monitor.Stop();
+
+        // "All monitoring stopped" would be news to a user who never saw it start.
+        Assert.Empty(log);
+    }
 }
