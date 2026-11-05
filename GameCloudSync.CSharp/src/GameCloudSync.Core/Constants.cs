@@ -42,4 +42,13 @@ public static class Constants
 
     public const string TargetOneDrive = "OneDrive";
     public const string TargetWebDav = "WebDAV";
+
+    // Updates come from this repository's latest GitHub release, which carries the single-file exe under this name.
+    public const string UpdateRepository = "B-lackLuster/GameCloudSync";
+    public const string UpdateAssetName = "GameCloudSync.exe";
+    public const string LatestReleaseApiUrl = "https://api.github.com/repos/" + UpdateRepository + "/releases/latest";
+    public const string LatestReleasePageUrl = "https://github.com/" + UpdateRepository + "/releases/latest";
+    public const int UpdateCheckIntervalHours = 12;
+    // Passed to the new version when an update restarts the app.
+    public const string UpdatedArg = "--updated";
 }

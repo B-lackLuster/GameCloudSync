@@ -23,5 +23,9 @@ public sealed class AppConfig
     public bool DebugWebDavLog { get; set; }
     /// <summary>The "still running in the tray" notice was shown the first time the window was closed.</summary>
     public bool TrayHintShown { get; set; }
+    /// <summary>Ask GitHub for a newer release shortly after startup and every few hours.</summary>
+    public bool AutoCheckUpdates { get; set; } = true;
+    /// <summary>A release the user chose not to install ("2.3.0"); a newer one is offered again.</summary>
+    public string SkippedUpdateVersion { get; set; } = "";
     public List<GameConfig> Games { get; set; } = new();
 }

@@ -24,6 +24,7 @@ public partial class MainWindow : Window
     private readonly MainViewModel _vm;
     private readonly TrayIconService _tray;
     private bool _allowClose;
+    private bool _updateDialogOpen;
 
     private static readonly JsonSerializerOptions ConfigJsonOptions = new()
     {
@@ -187,6 +188,25 @@ public partial class MainWindow : Window
     }
 
     private void OnCancelBusy(object sender, RoutedEventArgs e) => _vm.CancelBusy();
+
+    private void OnShowUpdate(object sender, RoutedEventArgs e) => ShowUpdateDialog();
+
+    /// <summary>Shows the release the last check found, with its notes and the button that installs it.</summary>
+    public void ShowUpdateDialog()
+    {
+        // The tray notification can be clicked again while the dialog is up.
+        if (_updateDialogOpen || _vm.Update.Available is not { } release)
+            return;
+        _updateDialogOpen = true;
+        try
+        {
+            new UpdateDialog(_vm.Update, release) { Owner = this }.ShowDialog();
+        }
+        finally
+        {
+            _updateDialogOpen = false;
+        }
+    }
 
     /// <summary>Startup sync found a save that changed on both sides; the user decides which one stays.</summary>
     private Task<ConflictChoice> ResolveConflictAsync(SyncConflict conflict)

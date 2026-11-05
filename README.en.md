@@ -17,6 +17,7 @@ A Windows app that watches each game's save folder and backs every new save up t
 - **Several PCs**: each PC remembers where it last synced; if both this PC and the cloud changed since then, you are asked instead of the newer one simply winning
 - **Safe restores**: the local save is snapshotted before it is overwritten, and a failed restore leaves it untouched
 - **Failures you can see**: Windows notifications, a red tray icon, a dashboard banner and the reason on the game card; failed backups are retried automatically
+- **Updates itself**: tells you about a new version and downloads, checks and restarts into it in one click; no more fetching it from GitHub by hand
 - **Low maintenance**: one portable exe, no installer; lives in the tray, starts with Windows; Chinese and English UI
 
 ## Download
@@ -24,7 +25,7 @@ A Windows app that watches each game's save folder and backs every new save up t
 Get `GameCloudSync.exe` from [Releases](https://github.com/B-lackLuster/GameCloudSync/releases/latest), put it in any folder and run it. It is a self-contained single file; no .NET installation is needed.
 
 - Requires Windows 10 / 11 (64-bit)
-- To upgrade, right-click the tray icon and choose "Quit", then replace the old exe with the new one; your settings, WebDAV password and cloud backups carry on
+- Upgrading: from v2.3.0 on the app checks for updates itself; when there is one, an "Update to vX.Y.Z" button appears at the bottom left and "Update Now" does the rest (see [Updates](#updates)). Older versions need one manual upgrade: right-click the tray icon, choose "Quit" and replace the old exe with the new one. Your settings, WebDAV password and cloud backups carry on
 
 ## Getting started
 
@@ -90,12 +91,13 @@ What happened during this run (the latest 400 entries): backups, downloads, conn
 | Backup Retention | Default backups (new games keep 10; each game can change its own) |
 | Download Preferences | Default download source, config update source: OneDrive first / WebDAV first / Ask me each time |
 | Run Options | Language (中文 / English), start with Windows, run in background (minimize to tray when closing), auto backup/download on startup, auto-save game config to cloud, WebDAV debug log |
+| Updates | Current version, check for updates automatically (on by default), "Check for Updates" |
 
 The WebDAV password is encrypted with Windows DPAPI and never written to the config file.
 
 ### Tray icon
 
-- Gray: not monitoring; green: monitoring; red: a game needs attention. A failed background backup also raises a Windows notification
+- Gray: not monitoring; green: monitoring; red: a game needs attention. A failed background backup, or a new version found while the app is in the tray, also raises a Windows notification
 - Double-click to open the window; right-click for "Show Main Window", "Monitor saves (auto backup)" and "Quit"
 - Only one copy runs: starting the exe again brings up the window of the one already running
 - With "Start with Windows" on, the app starts straight into the tray when you sign in, without opening its window
@@ -165,6 +167,16 @@ Since game names become folder names, they can't contain `\ / : * ? " < > |` or 
 - When a config from another PC is imported or restored from the cloud, `C:\Users\<their user name>\` in its paths is switched to this PC's user folder
 - Folders that are far too broad are refused — a whole drive, the user profile, Documents, AppData, Program Files and the like — because backups and restores always cover the whole folder; so are the OneDrive backup folder itself and the folders above it
 
+### Updates
+
+- About 20 seconds after it starts, and every 12 hours after that, the app asks GitHub for the latest release (pre-releases are ignored); when it is offline or GitHub is out of reach it says nothing and tries again half an hour later
+- A new version shows up as an "Update to vX.Y.Z" button at the bottom left and a line in the activity log; while the app is in the tray, a Windows notification appears, and clicking it opens the update window
+- The update window shows the release notes. "Update Now" downloads the new `GameCloudSync.exe` (with progress, and you can cancel), checks it against the size and SHA256 that GitHub reports and checks the version number inside the exe; if anything is off, nothing is installed
+- Backups and restores that are under way are allowed to finish first. The running exe is then renamed to `GameCloudSync.exe.old`, the new one takes its place and the app restarts; the new version deletes the old file. Settings, the WebDAV password and cloud backups are not touched
+- "Skip This Version" stops the reminders for that version until a newer one comes out; "Check for Updates" in Settings still shows it
+- An app in a folder it can't write to (such as Program Files), or one run from source, can't update itself; its update window offers "Open Download Page" instead
+- Only GitHub is contacted (`api.github.com` and the release download), through the system proxy settings; automatic checks can be turned off in Settings
+
 ### Where data is kept
 
 Next to the exe by default (portable). If that folder can't be written (for example under Program Files), everything goes to `%APPDATA%\GameCloudSync` instead, taking a config already beside the exe along.
@@ -185,12 +197,16 @@ Yes. By default closing the window only sends it to the tray, and monitoring and
 **WebDAV says the login failed?**
 Check the username and password. Some services (Nutstore, for one) want a password generated for third-party apps rather than your account password.
 
+**The update check can't reach GitHub?**
+The app uses the system proxy settings, like your browser; if the browser opens GitHub, the app usually gets through too. A failed automatic check only goes to the log file. You can also turn off "Check for updates automatically" in Settings and use "Check for Updates", or the Releases page, when you want.
+
 **Does the OneDrive target have to be OneDrive?**
 No. It is simply a local folder that backups are copied into and the sync client uploads. Any synced folder, an external drive or a mapped NAS share works too.
 
 ## Upgrading from older versions
 
-- v2.x: replace the exe with the new one
+- v2.3.0 and later: the app tells you about a new version; click "Update Now" in the app
+- v2.0 – v2.2.x: replace the exe with the new one (just this once; after that the app updates itself)
 - The Python version (v1.x): put your old `config.json` next to the exe; its fields are fully compatible, and the WebDAV password is moved to encrypted storage automatically
 - Backup folder naming is unchanged, so old and new versions see each other's backups
 - The Python sources were removed from the repository; they are still in the git history (last in commit `a8bb92f`)
@@ -206,6 +222,14 @@ dotnet publish GameCloudSync.CSharp/src/GameCloudSync.App -c Release -r win-x64 
 ```
 
 The result is `GameCloudSync.CSharp/publish/GameCloudSync.exe` (a self-contained single file; the target PC needs no .NET).
+
+Publishing a new version (automatic updates rely on this):
+
+1. Set `<Version>` in `GameCloudSync.CSharp/src/GameCloudSync.App/GameCloudSync.App.csproj` to the new number, say `2.3.1`
+2. Build the exe with the `dotnet publish` command above
+3. Publish a GitHub release tagged `v2.3.1` (not marked as a pre-release) with the file attached as `GameCloudSync.exe`
+
+The app compares the tag of the latest release with its own version, and after downloading it checks that the version inside the exe matches the tag; an exe that doesn't match is not installed, so it can't keep offering the same update again.
 
 Project layout:
 

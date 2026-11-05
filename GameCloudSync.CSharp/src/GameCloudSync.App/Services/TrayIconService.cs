@@ -21,6 +21,8 @@ public sealed class TrayIconService : IDisposable
     private readonly TaskbarIcon _tray;
     private MenuItem? _monitorItem;
     private bool _monitoring;
+    // What clicking the notification on show does; each notification brings its own.
+    private Action? _notificationClick;
 
     public event Action? ShowWindowRequested;
     /// <summary>The monitoring switch was clicked: start when stopped, stop when running.</summary>
@@ -33,6 +35,12 @@ public sealed class TrayIconService : IDisposable
         _tray.Icon = IconFor(TrayState.Idle);
         _tray.ToolTipText = Localization.T("Tray.TooltipIdle");
         _tray.TrayMouseDoubleClick += (_, _) => ShowWindowRequested?.Invoke();
+        _tray.TrayBalloonTipClicked += (_, _) =>
+        {
+            var click = _notificationClick;
+            _notificationClick = null;
+            click?.Invoke();
+        };
         RebuildMenu();
         Localization.Instance.LanguageChanged += RebuildMenu;
     }
@@ -65,9 +73,10 @@ public sealed class TrayIconService : IDisposable
                 : Localization.T("Tray.TooltipIdle");
     }
 
-    /// <summary>Pops a Windows notification from the tray icon.</summary>
-    public void ShowNotification(string title, string message, bool isError)
+    /// <summary>Pops a Windows notification from the tray icon; <paramref name="onClick"/> runs when it is clicked.</summary>
+    public void ShowNotification(string title, string message, bool isError, Action? onClick = null)
     {
+        _notificationClick = onClick;
         _tray.ShowBalloonTip(Truncate(title, MaxBalloonTitle), Truncate(message, MaxBalloonText),
             isError ? BalloonIcon.Error : BalloonIcon.Info);
     }

@@ -2,6 +2,8 @@ using GameCloudSync.Core.Services;
 
 namespace GameCloudSync.Core.Tests;
 
+// Switches the UI language, so tests that compare messages run apart from it.
+[Collection(nameof(Localization))]
 public class LocalizationTests
 {
     [Fact]

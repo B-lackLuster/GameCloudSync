@@ -152,6 +152,32 @@
                         <CheckBox x:Name="DebugCheck" Content="{Binding [Set.DebugWebDav], Source={x:Static loc:Localization.Instance}}" />
                     </StackPanel>
                 </Border>
+
+                <!-- Updates -->
+                <Border Style="{StaticResource Card}" Margin="0,0,0,10">
+                    <StackPanel>
+                        <TextBlock Text="{Binding [Set.UpdateSection], Source={x:Static loc:Localization.Instance}}" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="104" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{Binding [Set.CurrentVersion], Source={x:Static loc:Localization.Instance}}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="VersionText" Grid.Column="1" VerticalAlignment="Center" />
+                        </Grid>
+                        <CheckBox x:Name="AutoUpdateCheck" Content="{Binding [Set.AutoCheckUpdates], Source={x:Static loc:Localization.Instance}}" Margin="0,0,0,10" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="CheckUpdateButton" Content="{Binding [Btn.CheckUpdates], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}"
+                                    Click="OnCheckUpdates" VerticalAlignment="Top" />
+                            <TextBlock x:Name="UpdateResult" Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
+                                       FontSize="12" Foreground="{StaticResource TextSecBrush}" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </ScrollViewer>
 

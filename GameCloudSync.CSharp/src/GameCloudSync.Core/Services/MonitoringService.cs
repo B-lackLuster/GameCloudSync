@@ -40,6 +40,8 @@ public sealed class MonitoringService : IDisposable
     private readonly CancellationTokenSource _cts = new();
     // Set by Start even when there was nothing to watch, cleared by Stop.
     private bool _active;
+    // A backup taken off the queue is running.
+    private bool _backupRunning;
 
     private sealed class RetryState
     {
@@ -105,6 +107,20 @@ public sealed class MonitoringService : IDisposable
         {
             lock (_lock)
                 return _active;
+        }
+    }
+
+    /// <summary>
+    /// True while a backup runs or waits to run, or a watched folder has changed and its backup is still to come:
+    /// quitting now would leave that change without a backup until the save changes again. Backups waiting to be
+    /// repeated after a failure don't count.
+    /// </summary>
+    public bool HasPendingWork
+    {
+        get
+        {
+            lock (_lock)
+                return _backupRunning || _queued.Count > 0 || _watchers.Any(w => w.HasPendingChange);
         }
     }
 
@@ -249,6 +265,7 @@ public sealed class MonitoringService : IDisposable
                             _pendingSaves.Add(SaveKey(watcher.Game));
                         continue;
                     }
+                    _backupRunning = true;
                 }
                 try
                 {
@@ -262,6 +279,11 @@ public sealed class MonitoringService : IDisposable
                 catch (Exception ex)
                 {
                     _log(Localization.T("Log.TaskError", ex.Message));
+                }
+                finally
+                {
+                    lock (_lock)
+                        _backupRunning = false;
                 }
             }
         }
@@ -438,6 +460,16 @@ public sealed class MonitoringService : IDisposable
 
         /// <summary>True when a change was still waiting for its quiet period at disposal.</summary>
         public bool PendingAtDispose { get; private set; }
+
+        /// <summary>A change is waiting for its quiet period, after which its backup is queued.</summary>
+        public bool HasPendingChange
+        {
+            get
+            {
+                lock (_lock)
+                    return !_disposed && _firstChangeUtc is not null;
+            }
+        }
 
         public bool IsDisposed
         {

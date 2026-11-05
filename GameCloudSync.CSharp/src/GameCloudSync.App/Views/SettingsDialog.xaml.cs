@@ -41,6 +41,8 @@ public partial class SettingsDialog : Window
         AutoSyncCheck.IsChecked = vm.Config.AutoSyncOnStartup;
         AutoConfigCheck.IsChecked = vm.Config.AutoBackupConfigToCloud;
         DebugCheck.IsChecked = vm.Config.DebugWebDavLog;
+        AutoUpdateCheck.IsChecked = vm.Config.AutoCheckUpdates;
+        VersionText.Text = vm.Update.CurrentVersionText;
 
         LanguageBox.ItemsSource = new[] { "中文", "English" };
         LanguageBox.SelectedIndex = Localization.Instance.Language == Localization.English ? 1 : 0;
@@ -115,6 +117,35 @@ public partial class SettingsDialog : Window
         }
     }
 
+    private async void OnCheckUpdates(object sender, RoutedEventArgs e)
+    {
+        CheckUpdateButton.IsEnabled = false;
+        UpdateResult.Text = Localization.T("Set.CheckingUpdates");
+        UpdateResult.Foreground = (System.Windows.Media.Brush)FindResource("TextSecBrush");
+        try
+        {
+            if (await _vm.Update.CheckAsync() is not { } release)
+            {
+                UpdateResult.Text = Localization.T("Set.UpToDate");
+                UpdateResult.Foreground = (System.Windows.Media.Brush)FindResource("SuccessBrush");
+                return;
+            }
+            UpdateResult.Text = Localization.T("Set.UpdateFound", release.VersionText);
+            UpdateResult.Foreground = (System.Windows.Media.Brush)FindResource("PrimaryBrush");
+            // Asked for by hand, so shown even when this version was skipped before.
+            new UpdateDialog(_vm.Update, release) { Owner = this }.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            UpdateResult.Text = Localization.T("Set.UpdateCheckFailed", ex.Message);
+            UpdateResult.Foreground = (System.Windows.Media.Brush)FindResource("DangerBrush");
+        }
+        finally
+        {
+            CheckUpdateButton.IsEnabled = true;
+        }
+    }
+
     private void OnSave(object sender, RoutedEventArgs e)
     {
         var newCloud = CloudRootBox.Text.Trim();
@@ -168,6 +199,7 @@ public partial class SettingsDialog : Window
         _vm.Config.AutoSyncOnStartup = AutoSyncCheck.IsChecked == true;
         _vm.Config.AutoBackupConfigToCloud = AutoConfigCheck.IsChecked == true;
         _vm.Config.DebugWebDavLog = DebugCheck.IsChecked == true;
+        _vm.Config.AutoCheckUpdates = AutoUpdateCheck.IsChecked == true;
 
         var newLanguage = LanguageBox.SelectedIndex == 1 ? Localization.English : Localization.Chinese;
         if (newLanguage != _vm.Config.Language)

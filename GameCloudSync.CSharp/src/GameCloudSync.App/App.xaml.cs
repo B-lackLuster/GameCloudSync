@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -53,8 +54,11 @@ public partial class App : Application
         var appDir = DataDirectory.Resolve(exeDir,
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Constants.AppFolderName));
         _dataDir = appDir;
+        var afterUpdate = e.Args.Any(arg => string.Equals(arg, Constants.UpdatedArg, StringComparison.OrdinalIgnoreCase));
         _singleInstance = new SingleInstance();
-        if (!_singleInstance.TryAcquire(appDir, Constants.WakeupFileName))
+        // After an update the previous version may still be closing; it has let go of the lock by then, normally.
+        if (!_singleInstance.TryAcquire(appDir, Constants.WakeupFileName,
+                afterUpdate ? TimeSpan.FromSeconds(15) : TimeSpan.Zero))
         {
             Shutdown();
             return;
@@ -117,8 +121,9 @@ public partial class App : Application
             () => secretStore.LoadPassword() ?? "",
             Log);
 
+        var updateService = new UpdateService(typeof(App).Assembly.GetName().Version ?? new Version(0, 0));
         var viewModel = new MainViewModel(
-            configStore, secretStore, backupService, cloudConfigService, _monitoring, ui, _fileLog);
+            configStore, secretStore, backupService, cloudConfigService, _monitoring, updateService, ui, _fileLog);
 
         // Tray
         _tray = new TrayIconService();
@@ -145,6 +150,19 @@ public partial class App : Application
         viewModel.Dashboard.ProblemCountChanged += UpdateTray;
         // Monitoring can be restarted from background threads (startup auto sync); the tray icon is UI.
         _monitoring.StateChanged += () => Dispatcher.InvokeAsync(UpdateTray);
+        // With the window open the sidebar shows the new version; in the tray only a notification can.
+        viewModel.Update.UpdateFound += release =>
+        {
+            if (_mainWindow?.IsVisible != true)
+                _tray?.ShowNotification(Localization.T("Notify.UpdateTitle", release.VersionText),
+                    Localization.T("Notify.UpdateBody"), isError: false, onClick: () =>
+                    {
+                        ShowMainWindow();
+                        _mainWindow?.ShowUpdateDialog();
+                    });
+        };
+        // Once the update dialog has closed.
+        viewModel.Update.RestartRequested += exePath => Dispatcher.BeginInvoke(() => RestartIntoUpdate(exePath));
 
         _mainWindow = new MainWindow(viewModel, _tray);
         MainWindow = _mainWindow;
@@ -170,6 +188,15 @@ public partial class App : Application
         viewModel.AutoStart();
         viewModel.CheckWakeupFile();
         UpdateTray();
+        if (afterUpdate)
+        {
+            viewModel.AppendLog(Localization.T("Log.Updated", viewModel.Update.CurrentVersionText));
+            _tray.ShowNotification(Localization.T("Notify.UpdatedTitle", viewModel.Update.CurrentVersionText),
+                Localization.T("Notify.UpdatedBody"), isError: false);
+        }
+        if (Environment.ProcessPath is { } runningExe)
+            _ = CleanUpAfterUpdateAsync(runningExe);
+        _ = viewModel.Update.RunAutomaticChecksAsync();
     }
 
     private void ShowMainWindow()
@@ -194,8 +221,16 @@ public partial class App : Application
 
     private void ShutdownApp()
     {
+        if (CloseDown())
+            Shutdown();
+    }
+
+    /// <summary>Stops monitoring, removes the tray icon, closes the window and lets go of the single-instance lock.</summary>
+    /// <returns>False when the app is already shutting down.</returns>
+    private bool CloseDown()
+    {
         if (_shuttingDown)
-            return;
+            return false;
         _shuttingDown = true;
         try
         {
@@ -217,7 +252,75 @@ public partial class App : Application
         _singleInstance?.Dispose();
         _fileLog?.Write("GameCloudSync exited");
         _fileLog?.Dispose();
+        return true;
+    }
+
+    /// <summary>The new version has taken the exe's place: close down as when quitting, then start it.</summary>
+    private void RestartIntoUpdate(string exePath)
+    {
+        _fileLog?.Write($"Restarting into the new version at {exePath}");
+        // Closing down releases the single-instance lock, which the new version takes over as it starts.
+        if (!CloseDown())
+            return;
+        try
+        {
+            StartProgram(exePath, Constants.UpdatedArg);
+        }
+        catch (Exception ex)
+        {
+            // Without a running copy nothing would be backed up: put the previous version back and start that.
+            var restarted = SelfUpdate.Revert(exePath) && TryStartProgram(exePath);
+            _fileLog?.Write($"The new version could not be started ({ex.Message}); " +
+                            (restarted ? "the previous version was put back" : "nothing could be started"));
+            MessageBox.Show(Localization.T(restarted ? "Update.RestartFailed" : "Update.RestartFailedNoRevert", ex.Message),
+                "GameCloudSync", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
         Shutdown();
+    }
+
+    private static void StartProgram(string exePath, params string[] args)
+    {
+        var start = new ProcessStartInfo(exePath)
+        {
+            UseShellExecute = false,
+            WorkingDirectory = Path.GetDirectoryName(exePath) ?? ""
+        };
+        foreach (var arg in args)
+            start.ArgumentList.Add(arg);
+        using var _ = Process.Start(start);
+    }
+
+    private static bool TryStartProgram(string exePath)
+    {
+        try
+        {
+            StartProgram(exePath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Deletes the version an update replaced (it may take a moment to exit after starting this one) and any
+    /// download an earlier run didn't finish.
+    /// </summary>
+    private async Task CleanUpAfterUpdateAsync(string exePath)
+    {
+        try
+        {
+            var old = SelfUpdate.OldPath(exePath);
+            if (await SelfUpdate.CleanUpAsync(exePath, TimeSpan.FromMinutes(1)))
+                _fileLog?.Write($"Deleted the previous version {old}");
+            else if (File.Exists(old))
+                _fileLog?.Write($"The previous version {old} could not be deleted yet; the next start tries again");
+        }
+        catch (Exception ex)
+        {
+            _fileLog?.Write($"Cleaning up after an update failed: {ex.Message}");
+        }
     }
 
     /// <summary>

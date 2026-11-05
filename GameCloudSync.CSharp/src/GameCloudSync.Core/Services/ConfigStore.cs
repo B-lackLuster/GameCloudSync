@@ -163,6 +163,7 @@ public sealed class ConfigStore
         config.Language = string.IsNullOrEmpty(config.Language) ? Localization.Chinese : config.Language;
         config.WebDavUrl ??= "";
         config.WebDavUsername ??= "";
+        config.SkippedUpdateVersion ??= "";
         config.DefaultDownloadSource = string.IsNullOrEmpty(config.DefaultDownloadSource)
             ? Constants.SourceAsk
             : config.DefaultDownloadSource;

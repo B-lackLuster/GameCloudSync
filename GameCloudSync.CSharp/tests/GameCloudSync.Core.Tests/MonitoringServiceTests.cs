@@ -82,6 +82,38 @@ public sealed class MonitoringServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task HasPendingWork_FromASaveUntilItsBackupIsDone()
+    {
+        var uploading = new TaskCompletionSource();
+        var finishUpload = new TaskCompletionSource();
+        var server = new FakeWebDavServer
+        {
+            Respond = async req =>
+            {
+                if (req.Method.Method == "PUT")
+                {
+                    uploading.TrySetResult();
+                    await finishUpload.Task;
+                }
+                return null;
+            }
+        };
+        using var monitor = Monitor(server.CreateBackupService(), Config(Constants.MethodWebDav, server.Url), quietMs: 300);
+        Assert.True(monitor.Start());
+        Assert.False(monitor.HasPendingWork);
+
+        // An update waits for this before it restarts the app: first the quiet period...
+        await File.WriteAllTextAsync(Path.Combine(_save, "slot.sav"), "progress");
+        await WaitUntilAsync(() => monitor.HasPendingWork);
+        // ...then the upload itself.
+        await uploading.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(monitor.HasPendingWork);
+
+        finishUpload.SetResult();
+        await WaitUntilAsync(() => !monitor.HasPendingWork);
+    }
+
+    [Fact]
     public async Task BurstOfWrites_IsBackedUpOnceAfterItSettles()
     {
         using var monitor = Monitor(new BackupService(), Config(Constants.MethodOneDrive), quietMs: 400);

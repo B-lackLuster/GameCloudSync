@@ -38,6 +38,8 @@ public sealed class MainViewModel : ObservableObject
     private string _pendingCloudSource = "";
     private bool _isMonitoring;
     private int _monitoredCount;
+    // Startup sync and a new game's first backup, which run without the busy bar.
+    private int _backgroundJobs;
 
     public MainViewModel(
         ConfigStore configStore,
@@ -45,6 +47,7 @@ public sealed class MainViewModel : ObservableObject
         BackupService backupService,
         CloudConfigService cloudConfigService,
         MonitoringService monitoring,
+        UpdateService updates,
         SynchronizationContext ui,
         FileLog? fileLog = null)
     {
@@ -57,6 +60,7 @@ public sealed class MainViewModel : ObservableObject
         _fileLog = fileLog;
         _config = configStore.Load();
         Dashboard = new DashboardViewModel(this);
+        Update = new UpdateViewModel(this, updates, Environment.ProcessPath);
         Games.CollectionChanged += (_, _) => OnPropertyChanged(nameof(GameCountText));
         _webDavPassword = _secretStore.LoadPassword() ?? "";
 
@@ -81,6 +85,7 @@ public sealed class MainViewModel : ObservableObject
 
     public AppConfig Config => _config;
     public DashboardViewModel Dashboard { get; }
+    public UpdateViewModel Update { get; }
     public string WebDavPassword => _webDavPassword;
     public ConfigStore ConfigStore => _configStore;
     public SecretStore SecretStore => _secretStore;
@@ -108,6 +113,12 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public bool CanAct => !IsBusy;
+
+    /// <summary>
+    /// A backup or restore is running or about to start, so quitting now would cut it off. An update waits for this
+    /// before it restarts the app.
+    /// </summary>
+    public bool HasBackgroundWork => IsBusy || Volatile.Read(ref _backgroundJobs) > 0 || _monitoring.HasPendingWork;
 
     /// <summary>What the running job is doing right now, shown beside its progress bar.</summary>
     public string BusyText
@@ -280,7 +291,7 @@ public sealed class MainViewModel : ObservableObject
         if (_config.AutoSyncOnStartup)
         {
             AppendLog(Localization.T("Log.CheckingSync"));
-            _ = Task.Run(AutoSyncAllGamesAsync);
+            RunInBackground(AutoSyncAllGamesAsync);
         }
         if (!string.IsNullOrEmpty(_config.CloudRoot) || !string.IsNullOrEmpty(_config.WebDavUrl))
             _ = Task.Run(async () =>
@@ -413,15 +424,23 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>Backs up a game that was just added, without holding anything up; failures are shown like any other.</summary>
     public async Task BackupNewGameAsync(GameConfig game)
     {
-        var result = await Task.Run(() => _backupService.RunBackupAsync(game, _config, _webDavPassword, AppendLog));
-        RunOnUi(() =>
+        Interlocked.Increment(ref _backgroundJobs);
+        try
         {
-            var item = Games.FirstOrDefault(g => ReferenceEquals(g.Game, game));
-            item?.SetLastFailure(result.HasFailures ? result.FailureSummary : null);
-            if (result.HasFailures)
-                RaiseFailureNotice(game.Name, result.FailureSummary);
-            _ = RefreshGamesAsync();
-        });
+            var result = await Task.Run(() => _backupService.RunBackupAsync(game, _config, _webDavPassword, AppendLog));
+            RunOnUi(() =>
+            {
+                var item = Games.FirstOrDefault(g => ReferenceEquals(g.Game, game));
+                item?.SetLastFailure(result.HasFailures ? result.FailureSummary : null);
+                if (result.HasFailures)
+                    RaiseFailureNotice(game.Name, result.FailureSummary);
+                _ = RefreshGamesAsync();
+            });
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _backgroundJobs);
+        }
     }
 
     /// <summary>Raised with a title and text when a game's backups start failing and the user should hear about it.</summary>
@@ -964,6 +983,23 @@ public sealed class MainViewModel : ObservableObject
         await Task.Delay(1000);
     }
 
+    /// <summary>Runs work off the UI thread, counted in <see cref="HasBackgroundWork"/> until it ends.</summary>
+    private void RunInBackground(Func<Task> work)
+    {
+        Interlocked.Increment(ref _backgroundJobs);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await work();
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _backgroundJobs);
+            }
+        });
+    }
+
     // ---------------- Logging / UI marshalling ----------------
 
     /// <summary>Writes the message to the log file and to the activity list.</summary>
@@ -972,6 +1008,9 @@ public sealed class MainViewModel : ObservableObject
         _fileLog?.Write(message);
         ShowLog(message);
     }
+
+    /// <summary>Writes the message to the log file only, for what the activity list doesn't need to show.</summary>
+    public void WriteFileLog(string message) => _fileLog?.Write(message);
 
     /// <summary>Adds a message to the activity list only, for callers that have already written it to the log file.</summary>
     public void ShowLog(string message)
