@@ -33,10 +33,14 @@ Get `GameCloudSync.exe` from [Releases](https://github.com/B-lackLuster/GameClou
    - OneDrive: click "Detect" to fill in a `GameCloudSync` folder inside your OneDrive (created when you save the settings), or pick any folder with "Browse..."
    - WebDAV: enter the server URL, username and password, then click "Test WebDAV Connection"
    - One of the two is enough
-2. **Add a game**: on the "Game library" page click "Add Game", enter the game's name, pick its local save folder and tick the backup methods (OneDrive / WebDAV)
+2. **Add a game**: click "Add Game", search for a title or select an installed Steam game, then choose a save folder and click "Next" to confirm the backup methods (OneDrive / WebDAV). Choose "Add Manually" to enter a name and folder yourself
 3. **Monitoring starts by itself**: once you add your first game, monitoring starts and the dashboard's "Monitoring engine" card shows "Running" (from then on it also starts whenever the app opens). After that, every save the game writes reaches the cloud a few seconds later
 
 You can close the window afterwards; the app keeps working in the tray.
+
+The Add Game search supports titles, Chinese names and aliases, and Steam App IDs. To find saves for another copy, select the game from the catalog and choose that copy's installation folder. Confirm the folder if several match, and use one entry if two installations share their saves. Individual file matches appear for reference. The catalog uses save locations from [Ludusavi Manifest](https://github.com/mtkennerly/ludusavi-manifest) and Chinese names from [Wikidata](https://www.wikidata.org/) and ships with the app for offline use.
+
+For Ubisoft games, search checks each Ubisoft Connect account. For Assassin's Creed Shadows, the general catalog entry also checks for Goldberg saves containing game progress. Each match shows its source so you can choose which folder to back up.
 
 ## A tour of the app
 

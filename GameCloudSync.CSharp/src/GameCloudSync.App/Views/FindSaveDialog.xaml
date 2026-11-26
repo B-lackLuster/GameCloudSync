@@ -1,0 +1,115 @@
+<Window x:Class="GameCloudSync.App.Views.FindSaveDialog"
+        Style="{StaticResource {x:Type Window}}"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="clr-namespace:GameCloudSync.Core.Services;assembly=GameCloudSync.Core"
+        Title="{Binding [FindSave.Title], Source={x:Static loc:Localization.Instance}}"
+        Width="720" Height="587" MinWidth="560" MinHeight="495"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Resources>
+        <Style x:Key="ResultList" TargetType="ListBox">
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Background" Value="{StaticResource CardBrush}" />
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Padding" Value="9,5" />
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                        <Setter Property="AutomationProperties.HelpText" Value="{Binding Detail}" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ListBoxItem">
+                                    <Border x:Name="Row" Background="Transparent" Padding="{TemplateBinding Padding}"
+                                            BorderBrush="Transparent" BorderThickness="1" CornerRadius="4">
+                                        <ContentPresenter />
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="Row" Property="BorderBrush" Value="{StaticResource BorderHoverBrush}" />
+                                        </Trigger>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter TargetName="Row" Property="BorderBrush" Value="{StaticResource PrimaryBrush}" />
+                                            <Setter TargetName="Row" Property="Background" Value="{StaticResource PrimarySoftBrush}" />
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <DataTemplate x:Key="SaveResult">
+            <StackPanel ToolTip="{Binding FullText}">
+                <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" Foreground="{StaticResource TextBrush}" />
+                <TextBlock Text="{Binding Detail}" TextTrimming="CharacterEllipsis" FontSize="11.5"
+                           Foreground="{StaticResource TextSecBrush}" />
+            </StackPanel>
+        </DataTemplate>
+    </Window.Resources>
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="5*" MinHeight="65" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="4*" MinHeight="55" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Margin="0,0,0,7">
+            <Label Content="{Binding [FindSave.Search], Source={x:Static loc:Localization.Instance}}"
+                   Target="{Binding ElementName=SearchBox}" Padding="0,0,0,5" Foreground="{StaticResource TextBrush}" />
+            <TextBox x:Name="SearchBox" TextChanged="OnSearchChanged" />
+            <TextBlock x:Name="SearchStatus" Margin="0,6,0,0" Foreground="{StaticResource TextSecBrush}" TextWrapping="Wrap" />
+        </StackPanel>
+
+        <ListBox x:Name="GameList" Grid.Row="1" Style="{StaticResource ResultList}"
+                 ItemTemplate="{StaticResource SaveResult}" SelectionChanged="OnGameSelected"
+                 AutomationProperties.Name="{Binding [FindSave.Games], Source={x:Static loc:Localization.Instance}}" />
+
+        <Grid Grid.Row="2" Margin="0,12,0,7">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <TextBlock Text="{Binding [FindSave.Results], Source={x:Static loc:Localization.Instance}}" FontWeight="SemiBold"
+                       VerticalAlignment="Center" />
+            <Button x:Name="RetryButton" Grid.Column="1" IsEnabled="False" Margin="8,0,0,0"
+                    Content="{Binding [FindSave.Retry], Source={x:Static loc:Localization.Instance}}"
+                    Style="{StaticResource SecondaryButton}" Click="OnRetry" />
+            <DockPanel x:Name="InstallPanel" Grid.Row="1" Grid.ColumnSpan="2" Margin="0,6,0,0" Visibility="Collapsed">
+                <Label DockPanel.Dock="Left" Content="{Binding [FindSave.Install], Source={x:Static loc:Localization.Instance}}"
+                       Target="{Binding ElementName=InstallPathBox}" Foreground="{StaticResource TextSecBrush}"
+                       VerticalAlignment="Center" Padding="0,0,8,0" />
+                <Button DockPanel.Dock="Right" Content="{Binding [Btn.Browse], Source={x:Static loc:Localization.Instance}}"
+                        Style="{StaticResource SecondaryButton}" Margin="8,0,0,0" Click="OnBrowseInstallation" />
+                <TextBox x:Name="InstallPathBox" TextChanged="OnInstallPathChanged" />
+            </DockPanel>
+            <TextBlock x:Name="ResultStatus" Grid.Row="2" Grid.ColumnSpan="2" Margin="0,5,0,0"
+                       Foreground="{StaticResource TextSecBrush}" TextWrapping="Wrap" />
+        </Grid>
+
+        <ListBox x:Name="PathList" Grid.Row="3" Style="{StaticResource ResultList}"
+                 ItemTemplate="{StaticResource SaveResult}" SelectionChanged="OnPathSelected"
+                 AutomationProperties.Name="{Binding [FindSave.Results], Source={x:Static loc:Localization.Instance}}" />
+
+        <DockPanel Grid.Row="4" Margin="0,12,0,0">
+            <Button DockPanel.Dock="Left" Content="{Binding [FindSave.Custom], Source={x:Static loc:Localization.Instance}}"
+                    Style="{StaticResource SecondaryButton}" Click="OnCustomAdd" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="{Binding [Common.Cancel], Source={x:Static loc:Localization.Instance}}" IsCancel="True"
+                        Style="{StaticResource SecondaryButton}" Margin="0,0,10,0" />
+                <Button x:Name="UseButton" Content="{Binding [FindSave.Use], Source={x:Static loc:Localization.Instance}}"
+                        IsDefault="True" IsEnabled="False" Style="{StaticResource PrimaryButton}" Click="OnUse" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

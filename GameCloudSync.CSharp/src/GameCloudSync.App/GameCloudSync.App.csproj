@@ -10,7 +10,7 @@
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <LangVersion>latest</LangVersion>
     <!-- The app compares this with the tag of the latest GitHub release (vX.Y.Z), which must carry the same number. -->
-    <Version>2.3.0</Version>
+    <Version>2.4.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\GameCloudSync.Core\GameCloudSync.Core.csproj" />

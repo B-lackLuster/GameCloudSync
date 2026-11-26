@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using GameCloudSync.Core;
@@ -13,10 +14,14 @@ public partial class AddGameDialog : Window
 {
     private readonly AppConfig _config;
 
-    public AddGameDialog(AppConfig config)
+    public AddGameDialog(AppConfig config, string? suggestedName, string? savePath, bool steam)
     {
-        InitializeComponent();
         _config = config;
+        InitializeComponent();
+        if (suggestedName != null)
+            NameBox.Text = CatalogName(suggestedName, steam);
+        if (savePath != null)
+            SaveBox.Text = savePath;
         OneDriveCheck.IsChecked = !string.IsNullOrEmpty(config.CloudRoot);
         WebDavCheck.IsChecked = !string.IsNullOrEmpty(config.WebDavUrl);
         UpdateHint();
@@ -58,6 +63,30 @@ public partial class AddGameDialog : Window
             SaveBox.Text = dialog.FolderName;
     }
 
+    private string CatalogName(string title, bool steam)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var name = string.Concat(title.Replace(":", " - ")
+            .Select(ch => invalid.Contains(ch) ? ' ' : ch)).Trim().TrimEnd('.').TrimEnd();
+        if (name.Length == 0) return "";
+        name = Limit(name, GameNames.MaxLength);
+        if (GameNames.Validate(name, _config.Games) == GameNameError.None) return name;
+
+        // Each copy needs its own backup name if the title is already used.
+        var edition = steam ? "Steam" : Localization.T("FindSave.Edition");
+        var suffix = $" ({edition})";
+        for (var index = 1; index <= _config.Games.Count + 1; index++)
+        {
+            var numbered = index == 1 ? suffix : $"{suffix} {index}";
+            var candidate = Limit(name, GameNames.MaxLength - numbered.Length) + numbered;
+            if (GameNames.Validate(candidate, _config.Games) == GameNameError.None) return candidate;
+        }
+        return "";
+
+        static string Limit(string value, int max) => value.Length <= max ? value
+            : value[..(char.IsHighSurrogate(value[max - 1]) ? max - 1 : max)].TrimEnd(' ', '.');
+    }
+
     private void OnNameChanged(object sender, TextChangedEventArgs e) =>
         GameNameFeedback.Show(NameError, NameBox.Text, _config.Games);
 
@@ -89,6 +118,13 @@ public partial class AddGameDialog : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             SaveBox.Focus();
             SaveBox.SelectAll();
+            return;
+        }
+        if (SavePathPolicy.FindOverlappingGame(save, _config.Games) is { } existing)
+        {
+            MessageBox.Show(this, Localization.T("FindSave.OverlapAdd", existing.Name), Localization.T("Common.Error"),
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            SaveBox.Focus();
             return;
         }
         var methods = new List<string>();

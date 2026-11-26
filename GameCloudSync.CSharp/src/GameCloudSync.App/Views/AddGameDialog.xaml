@@ -43,8 +43,8 @@
             </Grid.ColumnDefinitions>
             <TextBlock Text="{Binding [Add.SavePath], Source={x:Static loc:Localization.Instance}}" VerticalAlignment="Center" />
             <TextBox x:Name="SaveBox" Grid.Column="1" Margin="0,0,8,0" />
-            <Button Grid.Column="2" Content="{Binding [Btn.Browse], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}"
-                    Click="OnBrowse" />
+            <Button Grid.Column="2" Content="{Binding [Btn.Browse], Source={x:Static loc:Localization.Instance}}"
+                    Style="{StaticResource SecondaryButton}" Click="OnBrowse" />
         </Grid>
 
         <Grid Grid.Row="3" Margin="0,0,0,6">
@@ -63,7 +63,7 @@
                    Foreground="{StaticResource TextSecBrush}" VerticalAlignment="Top" TextWrapping="Wrap" />
 
         <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="{Binding [Common.Cancel], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}" IsCancel="True"
+            <Button Content="{Binding [FindSave.Back], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource SecondaryButton}" IsCancel="True"
                     Click="OnCancel" Margin="0,0,10,0" />
             <Button Content="{Binding [Btn.Add], Source={x:Static loc:Localization.Instance}}" Style="{StaticResource PrimaryButton}" IsDefault="True"
                     Click="OnAdd" />

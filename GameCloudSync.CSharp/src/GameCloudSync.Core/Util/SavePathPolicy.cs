@@ -1,3 +1,4 @@
+using GameCloudSync.Core.Models;
 using GameCloudSync.Core.Services;
 
 namespace GameCloudSync.Core.Util;
@@ -76,6 +77,42 @@ public static class SavePathPolicy
         _ => ""
     };
 
+    public static GameConfig? FindOverlappingGame(string savePath, IEnumerable<GameConfig> games)
+    {
+        var candidate = DirectoryIdentity(savePath);
+        if (candidate == null) return null;
+        return games.FirstOrDefault(game => DirectoryIdentity(game.Save) is { } existing
+            && (IsSameOrAncestor(existing, candidate) || IsSameOrAncestor(candidate, existing)));
+    }
+
+    private static string? DirectoryIdentity(string path)
+    {
+        // Windows also accepts extended spellings for ordinary drive and network paths.
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+            path = @"\\" + path[8..];
+        else if (path.Length >= 7 && path.StartsWith(@"\\?\", StringComparison.Ordinal) && path[5] == ':')
+            path = path[4..];
+        if (!Path.IsPathFullyQualified(path) || TryNormalize(path) is not { } normalized)
+            return null;
+        var root = Path.GetPathRoot(normalized)!;
+        var resolved = root;
+        foreach (var segment in normalized[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            resolved = Path.Combine(resolved, segment);
+            try
+            {
+                var directory = new DirectoryInfo(resolved);
+                if (directory.LinkTarget != null && directory.ResolveLinkTarget(true) is { } target)
+                    resolved = target.FullName;
+            }
+            catch (Exception ex) when (IsPathException(ex) || ex is IOException or UnauthorizedAccessException)
+            {
+                // The directory may not exist yet. Its normalized textual location still counts.
+            }
+        }
+        return TryNormalize(resolved) ?? normalized;
+    }
+
     /// <summary>The user's own folders (and the system's) that hold far more than one game's save.</summary>
     public static IReadOnlyList<string> DefaultProtectedFolders()
     {
@@ -134,5 +171,6 @@ public static class SavePathPolicy
 
     private static bool IsSameOrAncestor(string ancestor, string path) =>
         path.Equals(ancestor, StringComparison.OrdinalIgnoreCase)
-        || path.StartsWith(ancestor + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        || path.StartsWith(Path.EndsInDirectorySeparator(ancestor) ? ancestor : ancestor + Path.DirectorySeparatorChar,
+            StringComparison.OrdinalIgnoreCase);
 }

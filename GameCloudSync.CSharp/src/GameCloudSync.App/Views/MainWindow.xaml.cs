@@ -312,7 +312,7 @@ public partial class MainWindow : Window
 
     private void OnAddGame(object sender, RoutedEventArgs e)
     {
-        var dialog = new AddGameDialog(_vm.Config)
+        var dialog = new FindSaveDialog(_vm.Config)
         {
             Owner = this
         };
